@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["nodejs_22", "npm-9_x"]
+nixPkgs = ["nodejs_24"]
 
 [phases.install]
-cmds = ["npm ci --production"]
+cmds = ["npm ci --omit=dev"]
 
 [start]
-cmd = "node server.js"
+cmd = "node --experimental-sqlite server.js"
