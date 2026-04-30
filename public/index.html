@@ -41,7 +41,9 @@
           <button class="seg-btn active" data-type="image">單張圖片</button>
           <button class="seg-btn" data-type="carousel">輪播（最多 10）</button>
           <button class="seg-btn" data-type="reel">Reels 影片</button>
+          <button class="seg-btn" data-type="story">限時動態 / Story</button>
         </div>
+        <div class="muted small" id="type-hint" style="margin-top:6px"></div>
 
         <label>素材（拖曳或點擊上傳）</label>
         <div id="dropzone" class="dropzone">
@@ -57,6 +59,8 @@
         <div class="row" id="reel-options" style="display:none">
           <label class="check"><input type="checkbox" id="share-to-feed" checked /> 同步分享到主頁時間軸</label>
         </div>
+
+        <div id="quota-warn" class="msg" style="display:none"></div>
 
         <label>排程時間</label>
         <div class="row">
@@ -123,6 +127,17 @@
       <div class="row right">
         <button class="ghost" id="token-modal-cancel">取消</button>
         <button class="primary" id="token-modal-save">儲存並驗證</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Insights modal -->
+  <div id="insights-modal" class="modal" style="display:none">
+    <div class="modal-card" style="width:680px;max-height:80vh;overflow-y:auto">
+      <h3 id="insights-title">📊 業主洞察</h3>
+      <div id="insights-body"></div>
+      <div class="row right">
+        <button class="ghost" id="insights-close">關閉</button>
       </div>
     </div>
   </div>

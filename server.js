@@ -202,8 +202,11 @@ app.post('/api/posts', (req, res) => {
   if (!clientId || !type || !Array.isArray(mediaPaths) || !mediaPaths.length || !scheduledAt) {
     return res.status(400).json({ error: '缺欄位 clientId / type / mediaPaths / scheduledAt' });
   }
-  if (!['image', 'reel', 'carousel'].includes(type)) {
-    return res.status(400).json({ error: 'type 必須是 image / reel / carousel' });
+  if (!['image', 'reel', 'carousel', 'story'].includes(type)) {
+    return res.status(400).json({ error: 'type 必須是 image / reel / carousel / story' });
+  }
+  if (type === 'story' && mediaPaths.length !== 1) {
+    return res.status(400).json({ error: 'Story 只能有 1 個素材' });
   }
   if (!getClient(clientId)) return res.status(400).json({ error: '業主不存在' });
   const id = insertPost({
@@ -212,6 +215,36 @@ app.post('/api/posts', (req, res) => {
     shareToFeed: shareToFeed === false ? 0 : 1,
   });
   res.json({ id, post: getPost(id) });
+});
+
+app.get('/api/clients/:id/recent-media', async (req, res) => {
+  try {
+    const ig = await ensureClientAccount(parseInt(req.params.id, 10));
+    const data = await ig.getMedia({ limit: 12 });
+    res.json(data);
+  } catch (e) {
+    res.status(400).json({ error: e.response?.data?.error?.message || e.message });
+  }
+});
+
+app.get('/api/clients/:id/insights', async (req, res) => {
+  try {
+    const ig = await ensureClientAccount(parseInt(req.params.id, 10));
+    const data = await ig.getAccountInsights({ period: req.query.period || 'day' });
+    res.json(data);
+  } catch (e) {
+    res.status(400).json({ error: e.response?.data?.error?.message || e.message });
+  }
+});
+
+app.get('/api/clients/:id/limit', async (req, res) => {
+  try {
+    const ig = await ensureClientAccount(parseInt(req.params.id, 10));
+    const data = await ig.getPublishingLimit();
+    res.json(data);
+  } catch (e) {
+    res.status(400).json({ error: e.response?.data?.error?.message || e.message });
+  }
 });
 
 app.delete('/api/posts/:id', (req, res) => {
@@ -265,6 +298,12 @@ const publishPost = async (post) => {
         url: toUrl(p),
       }));
       result = await ig.publishCarouselPost({ items, caption: post.caption });
+    } else if (post.type === 'story') {
+      const p = post.media_paths[0];
+      const isVideo = /\.(mp4|mov|m4v)$/i.test(p);
+      result = await ig.publishStoryPost(
+        isVideo ? { videoUrl: toUrl(p) } : { imageUrl: toUrl(p) }
+      );
     }
 
     let permalink = null;

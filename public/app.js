@@ -28,18 +28,38 @@ $('#logout-btn').addEventListener('click', async () => {
 });
 
 // ─── Type segment ───
+const TYPE_HINTS = {
+  image: '單張圖片：JPEG（IG 不接受 PNG，工具會接受但 IG 可能拒）',
+  carousel: '輪播：2-10 張，可混圖片+影片',
+  reel: 'Reels：MP4/MOV、影片長度 3 秒-15 分、9:16 直立最佳、最大 1GB',
+  story: '限時動態：圖片或影片，9:16，發出後 24 小時自動消失（無 caption）',
+};
+
 document.querySelectorAll('.seg-btn').forEach(b => {
   b.addEventListener('click', () => {
     $$('.seg-btn').forEach(x => x.classList.remove('active'));
     b.classList.add('active');
     state.type = b.dataset.type;
     $('#reel-options').style.display = state.type === 'reel' ? '' : 'none';
+    $('#type-hint').textContent = TYPE_HINTS[state.type] || '';
+    const captionEl = $('#caption').parentElement;
+    if (state.type === 'story') {
+      $('#caption').disabled = true;
+      $('#caption').placeholder = '限時動態無 caption';
+    } else {
+      $('#caption').disabled = false;
+      $('#caption').placeholder = '寫文案…可包含 @ 標註與 #hashtag';
+    }
     if (state.type === 'reel' && state.files.length > 1) state.files = state.files.slice(0, 1);
     if (state.type === 'image' && state.files.length > 1) state.files = state.files.slice(0, 1);
+    if (state.type === 'story' && state.files.length > 1) state.files = state.files.slice(0, 1);
     if (state.type === 'carousel' && state.files.length > 10) state.files = state.files.slice(0, 10);
     renderPreview();
   });
 });
+
+// 初始顯示 hint
+$('#type-hint').textContent = TYPE_HINTS.image;
 
 // ─── Dropzone ───
 const dz = $('#dropzone');
@@ -120,6 +140,7 @@ $('#submit-btn').addEventListener('click', async () => {
   if (!state.files.length) return alert('請先上傳素材');
   if (!tInput.value) return alert('請選排程時間');
   if (state.type === 'reel' && !state.files[0].mimeType?.startsWith('video')) return alert('Reels 必須是影片檔');
+  if (state.type === 'story' && state.files.length !== 1) return alert('限時動態只能 1 個素材');
 
   const payload = {
     clientId: state.clientId,
@@ -215,7 +236,7 @@ async function loadPosts() {
 }
 
 const labelStatus = (s) => ({ pending: '⏳ 待發送', publishing: '📤 發送中', posted: '✅ 已發送', failed: '❌ 失敗' }[s] || s);
-const labelType = (t) => ({ image: '🖼️ 單圖', carousel: '🎞️ 輪播', reel: '🎬 Reels' }[t] || t);
+const labelType = (t) => ({ image: '🖼️ 單圖', carousel: '🎞️ 輪播', reel: '🎬 Reels', story: '⚡ Story' }[t] || t);
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 // ─── Clients ───
@@ -290,6 +311,7 @@ function renderClientList() {
         <div class="row">
           <button class="primary small" data-act="set-token" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${c.has_token ? '更換 Token' : '設定 Token'}</button>
           ${c.has_token ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
+          ${c.has_token ? `<button class="ghost small" data-act="insights" data-id="${c.id}" data-name="${escapeHtml(c.name)}">📊 洞察</button>` : ''}
           <button class="ghost small" data-act="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">刪除</button>
         </div>
       </div>
@@ -310,12 +332,59 @@ async function handleClientAction({ act, id, name }) {
     if (r.ok) alert(`✅ 已續期 ${Math.round(json.expiresIn / 86400)} 天`);
     else alert('❌ ' + json.error);
     loadClients();
+  } else if (act === 'insights') {
+    openInsightsModal(id, name);
   } else if (act === 'delete') {
     if (!confirm(`確定刪除業主「${name}」？所有排程貼文也會一併刪除`)) return;
     await fetch(`/api/clients/${id}`, { method: 'DELETE' });
     loadClients();
   }
 }
+
+async function openInsightsModal(id, name) {
+  const m = $('#insights-modal');
+  $('#insights-title').textContent = `📊 ${name} — 洞察 / 近期貼文`;
+  $('#insights-body').innerHTML = '<div class="muted">載入中…</div>';
+  m.style.display = 'flex';
+
+  const [limitR, mediaR] = await Promise.all([
+    fetch(`/api/clients/${id}/limit`).then(r => r.json()).catch(e => ({ error: e.message })),
+    fetch(`/api/clients/${id}/recent-media`).then(r => r.json()).catch(e => ({ error: e.message })),
+  ]);
+
+  const limitHtml = limitR.error
+    ? `<div class="msg err">⚠️ 額度查詢失敗：${escapeHtml(limitR.error)}</div>`
+    : (() => {
+        const cfg = limitR.data?.[0]?.config || {};
+        const usage = limitR.data?.[0]?.quota_usage || 0;
+        const max = cfg.quota_total || 50;
+        const pct = Math.round((usage / max) * 100);
+        const color = pct > 80 ? 'err' : pct > 50 ? 'warn' : 'ok';
+        return `<div class="quota-bar"><span class="dot ${color}"></span> 24h 發文額度：<strong>${usage}/${max}</strong>（${pct}%）</div>`;
+      })();
+
+  const mediaHtml = mediaR.error
+    ? `<div class="msg err">⚠️ ${escapeHtml(mediaR.error)}</div>`
+    : `<div class="recent-grid">${(mediaR.data || []).slice(0, 12).map(m => {
+        const isVid = m.media_type === 'VIDEO' || m.media_type === 'REELS';
+        return `<a href="${m.permalink}" target="_blank" class="recent-cell">
+          <img src="${m.thumbnail_url || m.media_url}" loading="lazy">
+          <div class="recent-meta">
+            <span>${m.media_type === 'CAROUSEL_ALBUM' ? '🎞️' : isVid ? '🎬' : '🖼️'}</span>
+            <span>❤️ ${m.like_count ?? '?'}</span>
+            <span>💬 ${m.comments_count ?? '?'}</span>
+          </div>
+        </a>`;
+      }).join('')}</div>`;
+
+  $('#insights-body').innerHTML = `
+    <h4 style="margin:0 0 8px">發文額度</h4>
+    ${limitHtml}
+    <h4 style="margin:18px 0 8px">近期 12 篇貼文</h4>
+    ${mediaHtml}
+  `;
+}
+$('#insights-close').addEventListener('click', () => $('#insights-modal').style.display = 'none');
 
 let tokenModalClientId = null;
 function openTokenModal(id, name) {
