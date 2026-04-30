@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>ＩＧ排程器 — 登入</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .login-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 16px; padding: 40px; width: 360px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    }
+    .login-card h1 { margin: 0 0 6px; font-size: 24px; }
+    .login-card .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+    .login-card input { margin-top: 0; }
+    .login-card button { width: 100%; margin-top: 16px; padding: 12px; font-size: 14px; }
+    .err { color: var(--err); font-size: 13px; margin-top: 10px; min-height: 18px; }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <h1>📸 ＩＧ排程器</h1>
+    <div class="sub">請登入以管理 IG 排程發文</div>
+    <label>帳號</label>
+    <input id="user" type="text" autocomplete="username" />
+    <label>密碼</label>
+    <input id="pw" type="password" autocomplete="current-password" />
+    <button class="primary" id="btn">登入</button>
+    <div id="err" class="err"></div>
+  </div>
+  <script>
+    const $ = (s) => document.querySelector(s);
+    const submit = async () => {
+      $('#err').textContent = '';
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ user: $('#user').value, password: $('#pw').value }),
+      });
+      if (r.ok) location.href = '/';
+      else $('#err').textContent = (await r.json()).error || '登入失敗';
+    };
+    $('#btn').addEventListener('click', submit);
+    document.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => {
+      if (e.key === 'Enter') submit();
+    }));
+  </script>
+</body>
+</html>
