@@ -73,7 +73,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 const buildClient = (clientRow) => {
   if (!clientRow?.access_token_enc) return null;
   const token = decrypt(clientRow.access_token_enc);
-  return new IGClient({ token, igUserId: clientRow.ig_user_id, version: GRAPH_VERSION });
+  return new IGClient({
+    token,
+    igUserId: clientRow.ig_user_id,
+    tokenType: clientRow.token_type || 'fb',
+    version: GRAPH_VERSION,
+  });
 };
 
 const ensureClientAccount = async (clientId) => {
@@ -85,8 +90,10 @@ const ensureClientAccount = async (clientId) => {
     const acc = await ig.resolveAccount();
     updateClient(c.id, {
       ig_user_id: acc.igUserId,
+      ig_username: acc.igUsername || c.ig_username,
       page_id: acc.pageId,
       page_name: acc.pageName,
+      token_type: ig.tokenType,
     });
     ig.igUserId = acc.igUserId;
   }
@@ -140,12 +147,13 @@ app.post('/api/clients/:id/token', async (req, res) => {
     updateClient(id, {
       access_token_enc: encrypt(token),
       ig_user_id: acc.igUserId,
-      ig_username: profile.username,
+      ig_username: profile.username || acc.igUsername,
       page_id: acc.pageId,
       page_name: acc.pageName,
+      token_type: ig.tokenType,
       token_refreshed_at: Date.now(),
     });
-    res.json({ ok: true, profile });
+    res.json({ ok: true, profile, tokenType: ig.tokenType });
   } catch (e) {
     res.status(400).json({ error: e.response?.data?.error?.message || e.message });
   }
