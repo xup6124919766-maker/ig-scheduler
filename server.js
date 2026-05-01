@@ -6,6 +6,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import {
+  db,
   insertClient, listClients, getClient, updateClient, deleteClient,
   insertPost, listPosts, getPost, getDuePosts, updatePostStatus, deletePost,
   purgeExpiredSessions,
@@ -258,6 +259,27 @@ app.get('/api/clients/:id/limit', async (req, res) => {
 app.delete('/api/posts/:id', (req, res) => {
   deletePost(parseInt(req.params.id, 10));
   res.json({ ok: true });
+});
+
+app.post('/api/posts/reorder', (req, res) => {
+  const { clientId, orderedIds } = req.body || {};
+  if (!clientId || !Array.isArray(orderedIds) || !orderedIds.length) {
+    return res.status(400).json({ error: '缺欄位 clientId / orderedIds' });
+  }
+  const pending = listPosts({ clientId, status: 'pending' }).sort((a, b) => a.scheduled_at - b.scheduled_at);
+  if (orderedIds.length !== pending.length) {
+    return res.status(400).json({ error: `排程中有 ${pending.length} 篇，但你給了 ${orderedIds.length} 個 id` });
+  }
+  const slots = pending.map(p => p.scheduled_at);
+  orderedIds.forEach((id, i) => {
+    const target = pending.find(p => p.id === id);
+    if (!target) throw new Error(`找不到 post #${id}`);
+    if (target.scheduled_at !== slots[i]) {
+      db.prepare('UPDATE posts SET scheduled_at = ? WHERE id = ? AND status = ?')
+        .run(slots[i], id, 'pending');
+    }
+  });
+  res.json({ ok: true, posts: listPosts({ clientId, status: 'pending' }) });
 });
 
 app.post('/api/posts/:id/run', async (req, res) => {

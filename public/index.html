@@ -4,25 +4,34 @@
   <meta charset="utf-8" />
   <title>ＩＧ排程器</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700&display=swap" />
   <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 </head>
 <body>
   <header>
-    <div style="display:flex;align-items:center;gap:14px">
-      <h1>📸 ＩＧ排程器</h1>
-      <div class="client-switcher">
-        <label>業主</label>
-        <select id="client-select"></select>
+    <div class="brand">
+      <div class="logo">📸</div>
+      <div>
+        <h1>IG 排程器</h1>
+        <div class="subtle small">一站管理你所有業主的 Instagram 內容</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:14px">
-      <div id="status-bar" class="muted">載入中…</div>
+    <div class="hdr-right">
+      <div class="client-switcher">
+        <span class="subtle small">業主</span>
+        <select id="client-select"></select>
+      </div>
+      <div id="status-bar" class="status-pill">載入中…</div>
       <button class="ghost small" id="logout-btn">登出</button>
     </div>
   </header>
 
   <nav class="tabs">
     <button class="tab active" data-tab="compose">＋ 排程新貼文</button>
+    <button class="tab" data-tab="planner">🎨 排版預覽</button>
     <button class="tab" data-tab="list">📋 排程列表</button>
     <button class="tab" data-tab="clients">👥 業主管理</button>
   </nav>
@@ -30,49 +39,84 @@
   <main>
     <!-- ============== Compose ============== -->
     <section id="tab-compose" class="panel active">
-      <div id="no-client-warn" class="card" style="display:none">
-        <h3>👋 還沒有業主</h3>
-        <p class="muted">請先到「👥 業主管理」分頁新增業主與貼上他的 Token。</p>
+      <div id="no-client-warn" class="card empty-state" style="display:none">
+        <div class="empty-icon">👋</div>
+        <h3>還沒有業主</h3>
+        <p class="subtle">請先到「業主管理」分頁新增第一個業主</p>
+        <button class="primary" onclick="document.querySelector('[data-tab=clients]').click()">前往業主管理</button>
       </div>
 
       <div class="card" id="compose-card">
+        <h3 class="card-title">排程新貼文</h3>
+
         <label>貼文類型</label>
         <div class="seg">
-          <button class="seg-btn active" data-type="image">單張圖片</button>
-          <button class="seg-btn" data-type="carousel">輪播（最多 10）</button>
-          <button class="seg-btn" data-type="reel">Reels 影片</button>
-          <button class="seg-btn" data-type="story">限時動態 / Story</button>
+          <button class="seg-btn active" data-type="image">🖼️ 單張</button>
+          <button class="seg-btn" data-type="carousel">🎞️ 輪播</button>
+          <button class="seg-btn" data-type="reel">🎬 Reels</button>
+          <button class="seg-btn" data-type="story">⚡ Story</button>
         </div>
-        <div class="muted small" id="type-hint" style="margin-top:6px"></div>
+        <div class="subtle small hint" id="type-hint"></div>
 
-        <label>素材（拖曳或點擊上傳）</label>
+        <label>上傳素材</label>
         <div id="dropzone" class="dropzone">
-          <p>把圖片 / 影片拖進來，或 <span class="link">點此選取檔案</span></p>
+          <div class="dz-icon">📁</div>
+          <p>把圖片 / 影片拖進來，或<span class="link"> 點此選取檔案</span></p>
+          <p class="subtle small">支援 JPG / PNG / MP4 / MOV，單檔最大 200MB</p>
           <input type="file" id="file-input" multiple accept="image/jpeg,image/png,video/mp4,video/quicktime" hidden />
         </div>
         <div id="preview" class="preview"></div>
 
-        <label>文案 / Caption</label>
-        <textarea id="caption" rows="6" placeholder="寫文案…可包含 @ 標註與 #hashtag"></textarea>
-        <div class="muted small"><span id="cap-count">0</span> / 2200</div>
+        <label>文案</label>
+        <textarea id="caption" rows="6" placeholder="寫文案…可包含 @標註 與 #hashtag"></textarea>
+        <div class="subtle small"><span id="cap-count">0</span> / 2200</div>
 
         <div class="row" id="reel-options" style="display:none">
           <label class="check"><input type="checkbox" id="share-to-feed" checked /> 同步分享到主頁時間軸</label>
         </div>
 
-        <div id="quota-warn" class="msg" style="display:none"></div>
-
         <label>排程時間</label>
         <div class="row">
           <input type="datetime-local" id="schedule-time" />
-          <button class="ghost" id="now-btn">立即發送</button>
+          <button class="ghost" id="now-btn">立即</button>
           <button class="ghost" id="plus-1h">+1 小時</button>
           <button class="ghost" id="plus-1d">+1 天</button>
+          <button class="ghost" id="plus-3d">+3 天</button>
         </div>
 
         <div class="row right">
-          <button class="primary" id="submit-btn">加入排程</button>
+          <button class="primary big" id="submit-btn">✨ 加入排程</button>
         </div>
+      </div>
+    </section>
+
+    <!-- ============== Planner ============== -->
+    <section id="tab-planner" class="panel">
+      <div class="planner-head">
+        <div id="planner-profile" class="ig-profile-card"></div>
+        <div class="planner-tip subtle small">
+          💡 拖拉「排程中」的貼文重新排序，IG 會依新的時間順序發出，呈現你想要的格子佈局。
+        </div>
+      </div>
+
+      <div class="planner-section">
+        <div class="planner-section-head">
+          <h3>📅 排程中（將依此順序發出）</h3>
+          <span class="subtle small" id="pending-count">0 篇</span>
+        </div>
+        <div id="grid-pending" class="ig-grid"></div>
+        <div id="grid-pending-empty" class="empty-state mini" style="display:none">
+          <div class="empty-icon">📭</div>
+          <p class="subtle">還沒有排程中的貼文</p>
+        </div>
+      </div>
+
+      <div class="planner-section">
+        <div class="planner-section-head">
+          <h3>✅ 已發布</h3>
+          <span class="subtle small" id="posted-count">0 篇</span>
+        </div>
+        <div id="grid-posted" class="ig-grid"></div>
       </div>
     </section>
 
@@ -84,7 +128,7 @@
         <button class="chip" data-filter="posted">✅ 已發送</button>
         <button class="chip" data-filter="failed">❌ 失敗</button>
         <label class="check" style="margin-left:auto"><input type="checkbox" id="all-clients" /> 所有業主</label>
-        <button class="ghost" id="reload-list">↻ 重新整理</button>
+        <button class="ghost small" id="reload-list">↻ 重新整理</button>
       </div>
       <div id="post-list"></div>
     </section>
@@ -92,9 +136,9 @@
     <!-- ============== Clients ============== -->
     <section id="tab-clients" class="panel">
       <div class="card">
-        <h3>＋ 新增業主</h3>
+        <h3 class="card-title">＋ 新增業主</h3>
         <div class="row">
-          <input type="text" id="new-client-name" placeholder="業主名稱（例：聖研、Skin逆齡）" style="flex:1" />
+          <input type="text" id="new-client-name" placeholder="業主名稱（例：聖研、Skin逆齡、Alan）" style="flex:2" />
           <input type="text" id="new-client-notes" placeholder="備註（選填）" style="flex:1" />
           <button class="primary" id="add-client-btn">新增</button>
         </div>
@@ -103,15 +147,14 @@
       <div id="client-list"></div>
 
       <div class="card">
-        <h3>📖 怎麼幫業主串接 IG？</h3>
+        <h3 class="card-title">📖 怎麼幫業主串接 IG？</h3>
         <ol class="guide">
-          <li>業主的 IG 必須是<strong>商業帳號</strong>，並且綁定一個 FB 粉專</li>
-          <li>請業主把該 IG 的 FB 粉專，把你（聖研）的 FB Developer App 加為合作 App，或把業主帳號加為你 App 的 Tester</li>
-          <li>到 <a href="https://developers.facebook.com/tools/explorer/" target="_blank">Graph API Explorer</a>，切到該業主帳號，勾權限：
+          <li>業主的 IG 必須是<strong>商業 / 創作者帳號</strong>，並綁定一個 FB 粉專</li>
+          <li>到 <a href="https://developers.facebook.com/tools/explorer/" target="_blank">Graph API Explorer</a> 切到該業主的 App，勾權限：
             <code>instagram_basic, instagram_content_publish, pages_show_list, pages_read_engagement, business_management</code></li>
           <li>產生 Access Token，再用 <a href="https://developers.facebook.com/tools/debug/accesstoken/" target="_blank">Token Debugger</a> 換成 60 天長效</li>
-          <li>把 token 貼到上面對應業主的「設定 Token」按鈕，工具會自動驗證並抓 IG 商業帳號 ID</li>
-          <li>之後 token 由系統每天凌晨 4 點自動續期，60 天滾動</li>
+          <li>把 token 貼到上面業主的「設定 Token」按鈕，工具會自動驗證並抓 IG 帳號</li>
+          <li>之後 token 由系統每天凌晨 4 點自動續期</li>
         </ol>
       </div>
     </section>
@@ -121,8 +164,8 @@
   <div id="token-modal" class="modal" style="display:none">
     <div class="modal-card">
       <h3>設定 Access Token</h3>
-      <div class="muted small" id="token-modal-target"></div>
-      <textarea id="token-modal-input" rows="4" placeholder="貼上 60 天長效 token"></textarea>
+      <div class="subtle small" id="token-modal-target"></div>
+      <textarea id="token-modal-input" rows="4" placeholder="貼上 60 天長效 token (EAAB...)"></textarea>
       <div class="msg" id="token-modal-msg"></div>
       <div class="row right">
         <button class="ghost" id="token-modal-cancel">取消</button>
@@ -133,11 +176,21 @@
 
   <!-- Insights modal -->
   <div id="insights-modal" class="modal" style="display:none">
-    <div class="modal-card" style="width:680px;max-height:80vh;overflow-y:auto">
+    <div class="modal-card big">
       <h3 id="insights-title">📊 業主洞察</h3>
       <div id="insights-body"></div>
       <div class="row right">
         <button class="ghost" id="insights-close">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Post detail modal -->
+  <div id="post-modal" class="modal" style="display:none">
+    <div class="modal-card big">
+      <div id="post-modal-body"></div>
+      <div class="row right">
+        <button class="ghost" id="post-modal-close">關閉</button>
       </div>
     </div>
   </div>
