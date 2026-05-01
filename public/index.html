@@ -34,6 +34,7 @@
     <button class="tab" data-tab="planner">🎨 排版預覽</button>
     <button class="tab" data-tab="list">📋 排程列表</button>
     <button class="tab" data-tab="clients">👥 業主管理</button>
+    <button class="tab" data-tab="logs">📜 系統日誌</button>
   </nav>
 
   <main>
@@ -158,6 +159,31 @@
         </ol>
       </div>
     </section>
+
+    <!-- ============== Logs ============== -->
+    <section id="tab-logs" class="panel">
+      <div class="filters">
+        <button class="chip active" data-log-level="">全部</button>
+        <button class="chip" data-log-level="info">ℹ️ Info</button>
+        <button class="chip" data-log-level="warn">⚠️ Warn</button>
+        <button class="chip" data-log-level="error">❌ Error</button>
+        <select id="log-source" style="margin-left:8px;width:auto;min-width:140px">
+          <option value="">所有來源</option>
+          <option value="auth">登入 (auth)</option>
+          <option value="client">業主 (client)</option>
+          <option value="post">貼文 (post)</option>
+          <option value="upload">上傳 (upload)</option>
+          <option value="scheduler">排程器 (scheduler)</option>
+          <option value="system">系統 (system)</option>
+        </select>
+        <label class="check" style="margin-left:auto">
+          <input type="checkbox" id="log-auto-refresh" checked /> 自動更新
+        </label>
+        <button class="ghost small" id="reload-logs">↻ 重整</button>
+      </div>
+      <div id="log-list" class="log-list"></div>
+    </section>
+
   </main>
 
   <!-- Token modal -->

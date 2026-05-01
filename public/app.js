@@ -20,6 +20,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (btn.dataset.tab === 'list') loadPosts();
     if (btn.dataset.tab === 'clients') loadClients();
     if (btn.dataset.tab === 'planner') loadPlanner();
+    if (btn.dataset.tab === 'logs') loadLogs();
   });
 });
 
@@ -211,9 +212,15 @@ async function loadPosts() {
           <div class="actions">
             ${p.status === 'pending' ? `
               <button class="ghost small" data-act="run" data-id="${p.id}">▶ 立即發送</button>
+              <button class="ghost small" data-act="dup" data-id="${p.id}">📋 複製</button>
               <button class="ghost small" data-act="del" data-id="${p.id}">取消</button>
             ` : ''}
-            ${p.status === 'failed' ? `<button class="ghost small" data-act="del" data-id="${p.id}">刪除</button>` : ''}
+            ${p.status === 'posted' ? `<button class="ghost small" data-act="dup" data-id="${p.id}">📋 複製為新貼文</button>` : ''}
+            ${p.status === 'failed' ? `
+              <button class="ghost small" data-act="retry" data-id="${p.id}">🔄 重試</button>
+              <button class="ghost small" data-act="dup" data-id="${p.id}">📋 複製</button>
+              <button class="ghost small" data-act="del" data-id="${p.id}">刪除</button>
+            ` : ''}
           </div>
         </div>
       </div>`;
@@ -222,17 +229,92 @@ async function loadPosts() {
   root.querySelectorAll('button[data-act]').forEach(b => {
     b.addEventListener('click', async () => {
       const id = b.dataset.id;
-      if (b.dataset.act === 'run') {
+      const act = b.dataset.act;
+      if (act === 'run') {
         if (!confirm('要立即發送嗎？')) return;
         await fetch(`/api/posts/${id}/run`, { method: 'POST' });
-      } else {
-        if (!confirm('確定取消這篇排程？')) return;
+      } else if (act === 'retry') {
+        if (!confirm('重試這篇貼文？將立刻重新發送')) return;
+        const r = await fetch(`/api/posts/${id}/retry`, { method: 'POST' });
+        if (!r.ok) alert((await r.json()).error || '重試失敗');
+      } else if (act === 'dup') {
+        const r = await fetch(`/api/posts/${id}/duplicate`, { method: 'POST' });
+        if (r.ok) alert('已複製為新貼文（預設 1 小時後排程，可去調時間）');
+        else alert((await r.json()).error || '複製失敗');
+      } else if (act === 'del') {
+        if (!confirm('確定？')) return;
         await fetch(`/api/posts/${id}`, { method: 'DELETE' });
       }
       loadPosts();
     });
   });
 }
+
+// ─── Logs ───
+let logAutoTimer = null;
+let logFilters = { level: '', source: '' };
+
+document.querySelectorAll('[data-log-level]').forEach(c => {
+  c.addEventListener('click', () => {
+    document.querySelectorAll('[data-log-level]').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    logFilters.level = c.dataset.logLevel;
+    loadLogs();
+  });
+});
+$('#log-source').addEventListener('change', e => { logFilters.source = e.target.value; loadLogs(); });
+$('#reload-logs').addEventListener('click', loadLogs);
+$('#log-auto-refresh').addEventListener('change', e => {
+  if (e.target.checked) startLogAuto();
+  else stopLogAuto();
+});
+
+function startLogAuto() {
+  stopLogAuto();
+  logAutoTimer = setInterval(() => {
+    if ($('#tab-logs').classList.contains('active')) loadLogs();
+  }, 5000);
+}
+function stopLogAuto() {
+  if (logAutoTimer) clearInterval(logAutoTimer);
+  logAutoTimer = null;
+}
+
+async function loadLogs() {
+  const params = new URLSearchParams();
+  if (logFilters.level) params.set('level', logFilters.level);
+  if (logFilters.source) params.set('source', logFilters.source);
+  params.set('limit', '300');
+  const r = await fetch('/api/logs?' + params);
+  if (!r.ok) return;
+  const { logs } = await r.json();
+  const root = $('#log-list');
+  if (!logs.length) {
+    root.innerHTML = `<div class="empty-state mini"><div class="empty-icon">📭</div><p class="subtle">沒有日誌</p></div>`;
+    return;
+  }
+  root.innerHTML = logs.map(l => {
+    const t = new Date(l.ts);
+    const time = t.toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const ctx = [
+      l.client_id ? `c#${l.client_id}` : null,
+      l.post_id ? `p#${l.post_id}` : null,
+      l.actor ? `@${l.actor}` : null,
+    ].filter(Boolean).join(' ');
+    const meta = l.metadata ? `<div class="log-meta">${escapeHtml(JSON.stringify(l.metadata))}</div>` : '';
+    return `
+      <div class="log-row log-${l.level}">
+        <span class="log-time">${time}</span>
+        <span class="log-badge log-${l.level}">${l.level.toUpperCase()}</span>
+        <span class="log-tag">${escapeHtml(l.source)}${l.action ? '/' + escapeHtml(l.action) : ''}</span>
+        <span class="log-ctx subtle">${escapeHtml(ctx)}</span>
+        <div class="log-msg">${escapeHtml(l.message || '')}</div>
+        ${meta}
+      </div>`;
+  }).join('');
+}
+
+if ($('#log-auto-refresh').checked) startLogAuto();
 
 const labelStatus = (s) => ({ pending: '⏳ 待發送', publishing: '📤 發送中', posted: '✅ 已發送', failed: '❌ 失敗' }[s] || s);
 const labelType = (t) => ({ image: '🖼️ 單圖', carousel: '🎞️ 輪播', reel: '🎬 Reels', story: '⚡ Story' }[t] || t);
