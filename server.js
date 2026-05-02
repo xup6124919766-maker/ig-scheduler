@@ -18,6 +18,9 @@ import { checkLogin, createSession, destroySession, requireAuth, setSessionCooki
 import { initTunnel, getPublicUrl, waitForTunnel } from './lib/tunnel.js';
 import { IGClient } from './lib/ig.js';
 import { logInfo, logWarn, logError } from './lib/log.js';
+import { errMsg as translateErr } from './lib/errors.js';
+import { generateCaption } from './lib/ai.js';
+import { notify } from './lib/notify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '4567', 10);
@@ -83,6 +86,7 @@ app.post('/api/login', (req, res) => {
         a.lockUntil = now + LOGIN_LOCK_MS;
         a.fails = 0;
         logError({ source: 'auth', action: 'lockout', message: `IP ${ip} 達失敗上限，鎖 15 分鐘` });
+        notify({ title: '🚨 登入嘗試異常', message: `IP ${ip} 失敗 10 次已鎖定`, level: 'error' }).catch(() => {});
       }
       loginAttempts.set(ip, a);
       logWarn({ source: 'auth', action: 'fail', actor: user || '?', message: `登入失敗 from ${ip}` });
@@ -146,7 +150,7 @@ const getPublicMediaBase = async () => {
   return waitForTunnel(45000);
 };
 
-const errMsg = (e) => e.response?.data?.error?.message || e.message;
+const errMsg = translateErr;
 
 // ─── 業主管理 ───
 app.get('/api/clients', (_req, res) => {
@@ -294,7 +298,7 @@ app.get('/api/posts', (req, res) => {
 });
 
 app.post('/api/posts', (req, res) => {
-  const { clientId, type, caption, mediaPaths, scheduledAt, shareToFeed } = req.body || {};
+  const { clientId, type, caption, mediaPaths, scheduledAt, shareToFeed, firstComment } = req.body || {};
   if (!clientId || !type || !Array.isArray(mediaPaths) || !mediaPaths.length || !scheduledAt) {
     return res.status(400).json({ error: '缺欄位 clientId / type / mediaPaths / scheduledAt' });
   }
@@ -309,10 +313,30 @@ app.post('/api/posts', (req, res) => {
     clientId, type, caption: caption || '', mediaPaths,
     scheduledAt: new Date(scheduledAt).getTime(),
     shareToFeed: shareToFeed === false ? 0 : 1,
+    firstComment: type === 'story' ? null : (firstComment || null),
   });
   logInfo({ source: 'post', action: 'create', clientId, postId: id, actor: req.user,
     message: `排程 ${type} 於 ${new Date(scheduledAt).toLocaleString('zh-TW')}` });
   res.json({ id, post: getPost(id) });
+});
+
+// ─── AI 文案 ───
+app.post('/api/ai/caption', async (req, res) => {
+  const { mediaPath, brandHint, extraInstructions } = req.body || {};
+  if (!mediaPath || !mediaPath.startsWith('/media/')) {
+    return res.status(400).json({ error: '缺 mediaPath' });
+  }
+  const filename = mediaPath.replace('/media/', '');
+  const filePath = path.join(uploadsDir, filename);
+  try {
+    const r = await generateCaption({ filePath, brandHint, extraInstructions });
+    logInfo({ source: 'ai', action: 'caption_generate', actor: req.user,
+      message: `AI 產文案 ${r.caption.length} 字 + ${r.hashtags.length} hashtags` });
+    res.json(r);
+  } catch (e) {
+    logError({ source: 'ai', action: 'caption_fail', actor: req.user, message: e.message });
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete('/api/posts/:id', (req, res) => {
@@ -448,12 +472,30 @@ const publishPost = async (post) => {
     });
     logInfo({ source: 'scheduler', action: 'publish_ok', clientId: post.client_id, postId: post.id,
       message: `已發送 mediaId=${result.id}`, metadata: { permalink } });
+
+    // hashtag 首則留言
+    if (post.first_comment) {
+      try {
+        await ig.postComment(result.id, post.first_comment);
+        logInfo({ source: 'scheduler', action: 'comment_ok', clientId: post.client_id, postId: post.id,
+          message: `首則留言已發 (${post.first_comment.length} 字)` });
+      } catch (e) {
+        logWarn({ source: 'scheduler', action: 'comment_fail', clientId: post.client_id, postId: post.id,
+          message: `首則留言失敗（不影響貼文）：${errMsg(e)}` });
+      }
+    }
   } catch (e) {
     const msg = errMsg(e);
     incrementRetry(post.id);
     updatePostStatus(post.id, { status: 'failed', error: msg });
     logError({ source: 'scheduler', action: 'publish_fail', clientId: post.client_id, postId: post.id,
       message: msg, metadata: { type: post.type } });
+    notify({
+      title: `❌ 貼文發送失敗 #${post.id}`,
+      message: msg,
+      level: 'error',
+      metadata: { client_id: post.client_id, type: post.type, post_id: post.id },
+    }).catch(() => {});
   }
 };
 
@@ -476,7 +518,10 @@ const autoRefreshAllTokens = async () => {
       logInfo({ source: 'scheduler', action: 'token_refresh', clientId: c.id,
         message: `${c.name} token 已自動續期 ${Math.round(r.expires_in / 86400)} 天` });
     } catch (e) {
-      logError({ source: 'scheduler', action: 'token_refresh_fail', clientId: c.id, message: errMsg(e) });
+      const msg = errMsg(e);
+      logError({ source: 'scheduler', action: 'token_refresh_fail', clientId: c.id, message: msg });
+      notify({ title: `⚠️ Token 續期失敗：${c.name}`, message: msg, level: 'error',
+        metadata: { client_id: c.id } }).catch(() => {});
     }
   }
 };

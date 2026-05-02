@@ -21,6 +21,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (btn.dataset.tab === 'clients') loadClients();
     if (btn.dataset.tab === 'planner') loadPlanner();
     if (btn.dataset.tab === 'logs') loadLogs();
+    if (btn.dataset.tab === 'calendar') renderCalendar();
   });
 });
 
@@ -86,6 +87,12 @@ async function handleFiles(fileList) {
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: fd });
     const json = await r.json();
+    // 預檢圖片比例
+    for (const f of json.files) {
+      if (f.mimeType?.startsWith('image')) {
+        try { f.aspectInfo = await checkImageAspect(f.url); } catch {}
+      }
+    }
     state.files = state.files.concat(json.files);
     if (state.type === 'image') state.files = state.files.slice(-1);
     if (state.type === 'reel') state.files = state.files.filter(f => f.mimeType?.startsWith('video')).slice(-1);
@@ -98,6 +105,31 @@ async function handleFiles(fileList) {
   dz.querySelector('p').innerHTML = orig;
 }
 
+// 檢查圖片比例是否符合 IG（1:1=1.0、4:5=0.8、1.91:1=1.91）
+function checkImageAspect(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const ratio = img.width / img.height;
+      const isSquare = Math.abs(ratio - 1) < 0.02;
+      const isPortrait = Math.abs(ratio - 0.8) < 0.05;
+      const isLandscape = Math.abs(ratio - 1.91) < 0.1;
+      const isReelOk = state.type === 'reel' || state.type === 'story'
+        ? Math.abs(ratio - 0.5625) < 0.05 : true;
+      const ok = isSquare || isPortrait || isLandscape;
+      let warn = null;
+      if (state.type === 'reel' || state.type === 'story') {
+        if (!isReelOk) warn = `${state.type === 'reel' ? 'Reels' : 'Story'} 應 9:16，實際 ${img.width}×${img.height}（${ratio.toFixed(2)}）`;
+      } else if (!ok) {
+        warn = `比例 ${ratio.toFixed(2)} 非 IG 標準（1:1 / 4:5 / 1.91:1），IG 會強制裁切`;
+      }
+      resolve({ width: img.width, height: img.height, ratio, ok, warn });
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
 function renderPreview() {
   const root = $('#preview');
   root.innerHTML = '';
@@ -105,13 +137,31 @@ function renderPreview() {
     const wrap = document.createElement('div');
     wrap.className = 'chip-img';
     const isVideo = f.mimeType?.startsWith('video');
+    const warn = f.aspectInfo?.warn;
     wrap.innerHTML = `
       ${isVideo ? `<video src="${f.url}" muted></video>` : `<img src="${f.url}">`}
       <button class="x" data-i="${i}">×</button>
       <span class="badge">${isVideo ? '影片' : '圖'}</span>
+      ${warn ? `<span class="warn-badge" title="${escapeHtml(warn)}">⚠️</span>` : ''}
     `;
     root.appendChild(wrap);
   });
+  // 顯示比例警告
+  const warns = state.files.filter(f => f.aspectInfo?.warn).map(f => f.aspectInfo.warn);
+  let warnEl = $('#aspect-warn');
+  if (!warnEl) {
+    warnEl = document.createElement('div');
+    warnEl.id = 'aspect-warn';
+    warnEl.className = 'msg err';
+    warnEl.style.marginTop = '8px';
+    root.parentNode.insertBefore(warnEl, root.nextSibling);
+  }
+  if (warns.length) {
+    warnEl.style.display = '';
+    warnEl.innerHTML = warns.map(w => `⚠️ ${escapeHtml(w)}`).join('<br>');
+  } else {
+    warnEl.style.display = 'none';
+  }
   root.querySelectorAll('.x').forEach(b => {
     b.addEventListener('click', () => {
       state.files.splice(parseInt(b.dataset.i, 10), 1);
@@ -150,6 +200,7 @@ $('#submit-btn').addEventListener('click', async () => {
     mediaPaths: state.files.map(f => f.url),
     scheduledAt: new Date(tInput.value).toISOString(),
     shareToFeed: $('#share-to-feed').checked,
+    firstComment: ($('#hashtags').value || '').trim() || null,
   };
   const r = await fetch('/api/posts', {
     method: 'POST',
@@ -158,8 +209,48 @@ $('#submit-btn').addEventListener('click', async () => {
   });
   const json = await r.json();
   if (!r.ok) return alert('排程失敗：' + json.error);
-  state.files = []; cap.value = ''; capCount.textContent = '0'; renderPreview();
+  state.files = []; cap.value = ''; $('#hashtags').value = ''; capCount.textContent = '0'; renderPreview();
   document.querySelector('[data-tab="planner"]').click();
+});
+
+// ─── AI 文案/標籤 ───
+async function callAICaption(extraInstructions) {
+  if (!state.files.length) { alert('請先上傳一張素材，AI 才看得到圖'); return; }
+  const file = state.files[0];
+  const btns = [$('#ai-caption-btn'), $('#ai-tags-btn')];
+  btns.forEach(b => { b.disabled = true; b.textContent = '⏳ AI 思考中…'; });
+  try {
+    const r = await fetch('/api/ai/caption', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mediaPath: file.url, extraInstructions }),
+    });
+    const json = await r.json();
+    if (!r.ok) throw new Error(json.error);
+    return json;
+  } finally {
+    $('#ai-caption-btn').disabled = false;
+    $('#ai-caption-btn').textContent = '✨ AI 寫文案';
+    $('#ai-tags-btn').disabled = false;
+    $('#ai-tags-btn').textContent = '✨ 推薦標籤';
+  }
+}
+
+$('#ai-caption-btn').addEventListener('click', async () => {
+  try {
+    const r = await callAICaption();
+    if (r.caption) { cap.value = r.caption; capCount.textContent = r.caption.length; }
+    if (r.hashtags?.length && !$('#hashtags').value.trim()) {
+      $('#hashtags').value = r.hashtags.join(' ');
+    }
+  } catch (e) { alert('AI 失敗：' + e.message); }
+});
+
+$('#ai-tags-btn').addEventListener('click', async () => {
+  try {
+    const r = await callAICaption('只給我 hashtag 陣列，caption 留空');
+    if (r.hashtags?.length) $('#hashtags').value = r.hashtags.join(' ');
+  } catch (e) { alert('AI 失敗：' + e.message); }
 });
 
 // ─── Posts list ───
@@ -315,6 +406,98 @@ async function loadLogs() {
 }
 
 if ($('#log-auto-refresh').checked) startLogAuto();
+
+// ─── Calendar ───
+let calCursor = new Date();
+calCursor.setDate(1);
+let calAllClients = false;
+$('#cal-all-clients').addEventListener('change', e => { calAllClients = e.target.checked; renderCalendar(); });
+$('#cal-prev').addEventListener('click', () => { calCursor.setMonth(calCursor.getMonth() - 1); renderCalendar(); });
+$('#cal-next').addEventListener('click', () => { calCursor.setMonth(calCursor.getMonth() + 1); renderCalendar(); });
+
+async function renderCalendar() {
+  const y = calCursor.getFullYear();
+  const m = calCursor.getMonth();
+  $('#cal-title').textContent = `${y} 年 ${m + 1} 月`;
+
+  const params = new URLSearchParams();
+  if (!calAllClients && state.clientId) params.set('client_id', state.clientId);
+  const r = await fetch('/api/posts?' + params);
+  const { posts } = await r.json();
+
+  // 按日期分組
+  const byDay = new Map();
+  for (const p of posts) {
+    const d = new Date(p.scheduled_at);
+    if (d.getFullYear() !== y || d.getMonth() !== m) continue;
+    const key = d.getDate();
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(p);
+  }
+
+  const firstDay = new Date(y, m, 1).getDay(); // 0=Sun
+  const lastDay = new Date(y, m + 1, 0).getDate();
+  const today = new Date();
+  const isThisMonth = today.getFullYear() === y && today.getMonth() === m;
+
+  const cells = [];
+  ['日','一','二','三','四','五','六'].forEach(w => cells.push(`<div class="cal-head-cell">${w}</div>`));
+  for (let i = 0; i < firstDay; i++) cells.push(`<div class="cal-cell empty"></div>`);
+  for (let d = 1; d <= lastDay; d++) {
+    const items = byDay.get(d) || [];
+    const isToday = isThisMonth && today.getDate() === d;
+    const counts = {
+      pending: items.filter(p => p.status === 'pending').length,
+      posted: items.filter(p => p.status === 'posted').length,
+      failed: items.filter(p => p.status === 'failed').length,
+    };
+    const thumbs = items.slice(0, 3).map(p => {
+      const u = p.media_paths[0];
+      const isVid = /\.(mp4|mov|m4v)$/i.test(u);
+      return isVid ? `<video src="${u}" muted></video>` : `<img src="${u}">`;
+    }).join('');
+    cells.push(`
+      <div class="cal-cell ${isToday ? 'today' : ''} ${items.length ? 'has' : ''}" data-day="${d}">
+        <div class="cal-day-num">${d}</div>
+        <div class="cal-thumbs">${thumbs}</div>
+        ${counts.pending ? `<span class="cal-tag pending">⏳${counts.pending}</span>` : ''}
+        ${counts.posted ? `<span class="cal-tag posted">✅${counts.posted}</span>` : ''}
+        ${counts.failed ? `<span class="cal-tag failed">❌${counts.failed}</span>` : ''}
+      </div>`);
+  }
+  $('#cal-grid').innerHTML = cells.join('');
+  $('#cal-grid').querySelectorAll('.cal-cell.has').forEach(c => {
+    c.addEventListener('click', () => showCalDay(parseInt(c.dataset.day, 10), byDay.get(parseInt(c.dataset.day, 10))));
+  });
+  $('#cal-day-detail').innerHTML = '';
+}
+
+function showCalDay(day, items) {
+  if (!items?.length) return;
+  const root = $('#cal-day-detail');
+  const date = new Date(calCursor.getFullYear(), calCursor.getMonth(), day);
+  root.innerHTML = `
+    <h3>${date.toLocaleDateString('zh-TW', { weekday: 'long', month: 'long', day: 'numeric' })}</h3>
+    ${items.sort((a, b) => a.scheduled_at - b.scheduled_at).map(p => {
+      const time = new Date(p.scheduled_at).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
+      const u = p.media_paths[0];
+      const isVid = /\.(mp4|mov|m4v)$/i.test(u);
+      return `
+        <div class="post-item" style="padding:10px">
+          <div class="thumbs">${isVid ? `<video class="thumb" src="${u}" muted></video>` : `<img class="thumb" src="${u}">`}</div>
+          <div class="body">
+            <div class="meta">
+              <span class="tag ${p.status}">${labelStatus(p.status)}</span>
+              <span>${labelType(p.type)}</span>
+              <span>🕐 ${time}</span>
+              <span class="subtle">@${p.ig_username || ''}</span>
+            </div>
+            <div class="caption">${escapeHtml((p.caption || '').slice(0, 100))}</div>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
 
 const labelStatus = (s) => ({ pending: '⏳ 待發送', publishing: '📤 發送中', posted: '✅ 已發送', failed: '❌ 失敗' }[s] || s);
 const labelType = (t) => ({ image: '🖼️ 單圖', carousel: '🎞️ 輪播', reel: '🎬 Reels', story: '⚡ Story' }[t] || t);

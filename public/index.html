@@ -32,6 +32,7 @@
   <nav class="tabs">
     <button class="tab active" data-tab="compose">＋ 排程新貼文</button>
     <button class="tab" data-tab="planner">🎨 排版預覽</button>
+    <button class="tab" data-tab="calendar">📅 行事曆</button>
     <button class="tab" data-tab="list">📋 排程列表</button>
     <button class="tab" data-tab="clients">👥 業主管理</button>
     <button class="tab" data-tab="logs">📜 系統日誌</button>
@@ -68,9 +69,18 @@
         </div>
         <div id="preview" class="preview"></div>
 
-        <label>文案</label>
-        <textarea id="caption" rows="6" placeholder="寫文案…可包含 @標註 與 #hashtag"></textarea>
+        <label style="display:flex;justify-content:space-between;align-items:center">
+          <span>文案</span>
+          <button class="ghost small" id="ai-caption-btn" type="button" title="用 AI 看圖生文案">✨ AI 寫文案</button>
+        </label>
+        <textarea id="caption" rows="6" placeholder="寫文案…可包含 @標註"></textarea>
         <div class="subtle small"><span id="cap-count">0</span> / 2200</div>
+
+        <label style="display:flex;justify-content:space-between;align-items:center">
+          <span>Hashtag（會自動放在第一則留言，不污染文案）</span>
+          <button class="ghost small" id="ai-tags-btn" type="button" title="AI 看圖建議 hashtag">✨ 推薦標籤</button>
+        </label>
+        <textarea id="hashtags" rows="2" placeholder="#自信 #保養 #聖研 …（用空格或換行分隔，自動發到第一則留言）"></textarea>
 
         <div class="row" id="reel-options" style="display:none">
           <label class="check"><input type="checkbox" id="share-to-feed" checked /> 同步分享到主頁時間軸</label>
@@ -119,6 +129,20 @@
         </div>
         <div id="grid-posted" class="ig-grid"></div>
       </div>
+    </section>
+
+    <!-- ============== Calendar ============== -->
+    <section id="tab-calendar" class="panel">
+      <div class="cal-head">
+        <button class="ghost small" id="cal-prev">‹ 上月</button>
+        <h2 id="cal-title" style="margin:0">—</h2>
+        <button class="ghost small" id="cal-next">下月 ›</button>
+        <label class="check" style="margin-left:auto">
+          <input type="checkbox" id="cal-all-clients" /> 所有業主
+        </label>
+      </div>
+      <div class="cal-grid" id="cal-grid"></div>
+      <div class="cal-day-detail" id="cal-day-detail"></div>
     </section>
 
     <!-- ============== List ============== -->
