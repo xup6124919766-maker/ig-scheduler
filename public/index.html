@@ -35,6 +35,7 @@
     <button class="tab" data-tab="calendar">📅 行事曆</button>
     <button class="tab" data-tab="list">📋 排程列表</button>
     <button class="tab" data-tab="clients">👥 業主管理</button>
+    <button class="tab admin-only" data-tab="users" style="display:none">🔐 用戶管理</button>
     <button class="tab" data-tab="logs">📜 系統日誌</button>
   </nav>
 
@@ -160,7 +161,7 @@
 
     <!-- ============== Clients ============== -->
     <section id="tab-clients" class="panel">
-      <div class="card">
+      <div class="card admin-only" style="display:none">
         <h3 class="card-title">＋ 新增業主</h3>
         <div class="row">
           <input type="text" id="new-client-name" placeholder="業主名稱（例：聖研、Skin逆齡、Alan）" style="flex:2" />
@@ -181,6 +182,40 @@
           <li>把 token 貼到上面業主的「設定 Token」按鈕，工具會自動驗證並抓 IG 帳號</li>
           <li>之後 token 由系統每天凌晨 4 點自動續期</li>
         </ol>
+      </div>
+    </section>
+
+    <!-- ============== Users (admin only) ============== -->
+    <section id="tab-users" class="panel">
+      <div class="card">
+        <h3 class="card-title">＋ 新增用戶</h3>
+        <div class="row">
+          <input type="text" id="new-user-name" placeholder="帳號（英文/數字）" style="flex:1" autocomplete="off" />
+          <input type="password" id="new-user-pw" placeholder="密碼（≥8 字元）" style="flex:1" autocomplete="new-password" />
+          <select id="new-user-role" style="width:auto">
+            <option value="staff">staff（員工）</option>
+            <option value="admin">admin（管理員）</option>
+          </select>
+          <button class="primary" id="add-user-btn">新增</button>
+        </div>
+      </div>
+      <div id="user-list"></div>
+
+      <div class="card">
+        <h3 class="card-title">🔑 修改自己密碼</h3>
+        <div class="row">
+          <input type="password" id="my-new-pw" placeholder="新密碼（≥8 字元）" style="flex:1" autocomplete="new-password" />
+          <button class="primary" id="change-my-pw-btn">改密碼</button>
+        </div>
+        <div class="subtle small" style="margin-top:6px">註：env 來的 admin 帳號不能用這裡改，請去 Railway 改 ADMIN_PASS_HASH</div>
+      </div>
+
+      <div class="card">
+        <h3 class="card-title">👥 角色說明</h3>
+        <ul class="guide">
+          <li><strong>admin</strong>：全權限，可管用戶、業主、token、發文、看 log</li>
+          <li><strong>staff</strong>：可發文、看業主、看 log，<strong>不能</strong>管用戶 / 不能改業主 token / 不能刪業主</li>
+        </ul>
       </div>
     </section>
 

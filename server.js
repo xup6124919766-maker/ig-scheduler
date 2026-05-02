@@ -4,6 +4,7 @@ import multer from 'multer';
 import cron from 'node-cron';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import {
   db,
@@ -12,9 +13,10 @@ import {
   purgeExpiredSessions,
   listLogs, purgeOldLogs, claimPost, incrementRetry,
   getOldPostedMediaPaths, getActiveMediaFilenames,
+  listUsers, insertUser, updateUser, deleteUser, findUserByUsername,
 } from './lib/db.js';
 import { encrypt, decrypt } from './lib/crypto.js';
-import { checkLogin, createSession, destroySession, requireAuth, setSessionCookie, clearSessionCookie, getCookie } from './lib/auth.js';
+import { checkLogin, createSession, destroySession, requireAuth, requireRole, setSessionCookie, clearSessionCookie, getCookie, hashPassword } from './lib/auth.js';
 import { initTunnel, getPublicUrl, waitForTunnel } from './lib/tunnel.js';
 import { IGClient } from './lib/ig.js';
 import { logInfo, logWarn, logError } from './lib/log.js';
@@ -40,9 +42,10 @@ app.use(express.json({ limit: '10mb' }));
 const storage = multer.diskStorage({
   destination: uploadsDir,
   filename: (_req, file, cb) => {
-    const ts = Date.now();
-    const safe = file.originalname.replace(/[^\w.\-]/g, '_');
-    cb(null, `${ts}_${safe}`);
+    // 32 字元 hex random hash + 副檔名（不可被列舉）
+    const hash = crypto.randomBytes(16).toString('hex');
+    const ext = (path.extname(file.originalname) || '').toLowerCase().replace(/[^.\w]/g, '').slice(0, 6);
+    cb(null, `${hash}${ext}`);
   },
 });
 const upload = multer({ storage, limits: { fileSize: 200 * 1024 * 1024 } });
@@ -69,6 +72,27 @@ const LOGIN_MAX_FAILS = 10;
 const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const clientIp = (req) => req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress || 'unknown';
 
+// 檢測登入異常（新 IP / 凌晨）
+const detectLoginAnomalies = (user, ip) => {
+  const out = [];
+
+  // 新 IP：30 天內未見過
+  try {
+    const recent = db.prepare(`SELECT message FROM logs
+      WHERE source='auth' AND action='login' AND actor=? AND ts > ?`)
+      .all(user, Date.now() - 30 * 86400000);
+    const seen = recent.some(r => r.message?.includes(`from ${ip}`));
+    if (!seen && recent.length > 0) out.push(`新 IP（30 天內未見過）`);
+  } catch {}
+
+  // 凌晨：台北時區 1-6 點
+  const taipeiHour = (new Date().getUTCHours() + 8) % 24;
+  if (taipeiHour >= 1 && taipeiHour < 6) {
+    out.push(`凌晨 ${taipeiHour} 點登入`);
+  }
+  return out;
+};
+
 app.post('/api/login', (req, res) => {
   const ip = clientIp(req);
   const now = Date.now();
@@ -80,7 +104,8 @@ app.post('/api/login', (req, res) => {
   }
   const { user, password } = req.body || {};
   try {
-    if (!checkLogin(user, password)) {
+    const result = checkLogin(user, password);
+    if (!result) {
       a.fails += 1;
       if (a.fails >= LOGIN_MAX_FAILS) {
         a.lockUntil = now + LOGIN_LOCK_MS;
@@ -93,10 +118,22 @@ app.post('/api/login', (req, res) => {
       return res.status(401).json({ error: '帳號或密碼錯誤' });
     }
     loginAttempts.delete(ip);
-    const { id, expiresAt } = createSession(user);
+    const { id, expiresAt } = createSession(result.username);
     setSessionCookie(res, id, expiresAt);
-    logInfo({ source: 'auth', action: 'login', actor: user, message: `成功登入 from ${ip}` });
-    res.json({ ok: true });
+
+    // 異常檢測：新 IP / 凌晨登入
+    const anomalies = detectLoginAnomalies(result.username, ip);
+    logInfo({ source: 'auth', action: 'login', actor: result.username,
+      message: `成功登入 from ${ip}${anomalies.length ? ' [' + anomalies.join('+') + ']' : ''} (role=${result.role})` });
+    if (anomalies.length) {
+      notify({
+        title: `🚨 異常登入：${result.username}`,
+        message: `${anomalies.join('、')}\nIP：${ip}\n時間：${new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}`,
+        level: 'warn',
+        metadata: { user: result.username, ip, anomalies },
+      }).catch(() => {});
+    }
+    res.json({ ok: true, role: result.role });
   } catch (e) {
     logError({ source: 'auth', action: 'login_error', message: e.message });
     res.status(500).json({ error: e.message });
@@ -152,6 +189,62 @@ const getPublicMediaBase = async () => {
 
 const errMsg = translateErr;
 
+// ─── 用戶管理（admin only）───
+app.get('/api/users', requireRole('admin'), (_req, res) => {
+  res.json({ users: listUsers() });
+});
+
+app.post('/api/users', requireRole('admin'), (req, res) => {
+  const { username, password, role = 'staff' } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: '缺少 username / password' });
+  if (password.length < 8) return res.status(400).json({ error: '密碼至少 8 字元' });
+  if (!['admin', 'staff'].includes(role)) return res.status(400).json({ error: 'role 必須是 admin / staff' });
+  if (findUserByUsername(username)) return res.status(400).json({ error: '帳號已存在' });
+  try {
+    const id = insertUser({ username, passwordHash: hashPassword(password), role, createdBy: req.user });
+    logInfo({ source: 'user', action: 'create', actor: req.user, message: `新增用戶 ${username} (role=${role})` });
+    res.json({ id, username, role });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.patch('/api/users/:id', requireRole('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { password, role, disabled } = req.body || {};
+  const fields = {};
+  if (password) {
+    if (password.length < 8) return res.status(400).json({ error: '密碼至少 8 字元' });
+    fields.password_hash = hashPassword(password);
+  }
+  if (role !== undefined) {
+    if (!['admin', 'staff'].includes(role)) return res.status(400).json({ error: 'role 必須是 admin / staff' });
+    fields.role = role;
+  }
+  if (disabled !== undefined) fields.disabled = disabled ? 1 : 0;
+  updateUser(id, fields);
+  logInfo({ source: 'user', action: 'update', actor: req.user, message: `修改用戶 #${id}（${Object.keys(fields).join(',')}）` });
+  res.json({ ok: true });
+});
+
+app.delete('/api/users/:id', requireRole('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  deleteUser(id);
+  logWarn({ source: 'user', action: 'delete', actor: req.user, message: `刪除用戶 #${id}` });
+  res.json({ ok: true });
+});
+
+// 自己改密碼（任何登入者可用）
+app.post('/api/me/password', (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 8) return res.status(400).json({ error: '密碼至少 8 字元' });
+  const u = findUserByUsername(req.user);
+  if (!u) return res.status(400).json({ error: 'env admin 帳號請改 Railway 環境變數，不能用 UI 改' });
+  updateUser(u.id, { password_hash: hashPassword(newPassword) });
+  logInfo({ source: 'user', action: 'change_password', actor: req.user });
+  res.json({ ok: true });
+});
+
 // ─── 業主管理 ───
 app.get('/api/clients', (_req, res) => {
   const rows = listClients().map(c => ({
@@ -162,7 +255,7 @@ app.get('/api/clients', (_req, res) => {
   res.json({ clients: rows });
 });
 
-app.post('/api/clients', (req, res) => {
+app.post('/api/clients', requireRole('admin'), (req, res) => {
   const { name, notes } = req.body || {};
   if (!name) return res.status(400).json({ error: '缺少名稱' });
   const id = insertClient({ name, notes });
@@ -170,7 +263,7 @@ app.post('/api/clients', (req, res) => {
   res.json({ id });
 });
 
-app.patch('/api/clients/:id', (req, res) => {
+app.patch('/api/clients/:id', requireRole('admin'), (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { name, notes, status } = req.body || {};
   updateClient(id, { name, notes, status });
@@ -178,7 +271,7 @@ app.patch('/api/clients/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.delete('/api/clients/:id', (req, res) => {
+app.delete('/api/clients/:id', requireRole('admin'), (req, res) => {
   const id = parseInt(req.params.id, 10);
   const c = getClient(id);
   deleteClient(id);
@@ -186,7 +279,7 @@ app.delete('/api/clients/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/clients/:id/token', async (req, res) => {
+app.post('/api/clients/:id/token', requireRole('admin'), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { token } = req.body || {};
   if (!token) return res.status(400).json({ error: '缺少 token' });
@@ -224,7 +317,7 @@ app.post('/api/clients/:id/token', async (req, res) => {
 });
 
 // 把現有 user token 升級為永不過期的 page token
-app.post('/api/clients/:id/upgrade-token', async (req, res) => {
+app.post('/api/clients/:id/upgrade-token', requireRole('admin'), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const c = getClient(id);
   if (!c) return res.status(404).json({ error: '找不到業主' });
@@ -253,7 +346,7 @@ app.post('/api/clients/:id/upgrade-token', async (req, res) => {
   }
 });
 
-app.post('/api/clients/:id/refresh-token', async (req, res) => {
+app.post('/api/clients/:id/refresh-token', requireRole('admin'), async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const c = getClient(id);
   const ig = buildClient(c);
@@ -447,7 +540,7 @@ app.post('/api/posts/:id/run', async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/status', (_req, res) => {
+app.get('/api/status', (req, res) => {
   const clients = listClients();
   res.json({
     publicUrl: PUBLIC_BASE_URL || getPublicUrl(),
@@ -456,6 +549,7 @@ app.get('/api/status', (_req, res) => {
     isRailway,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     serverTime: Date.now(),
+    me: { username: req.user, role: req.role },
   });
 });
 

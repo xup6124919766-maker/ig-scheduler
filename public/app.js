@@ -22,8 +22,17 @@ document.querySelectorAll('.tab').forEach(btn => {
     if (btn.dataset.tab === 'planner') loadPlanner();
     if (btn.dataset.tab === 'logs') loadLogs();
     if (btn.dataset.tab === 'calendar') renderCalendar();
+    if (btn.dataset.tab === 'users') loadUsers();
   });
 });
+
+let currentRole = 'staff';
+function applyRoleVisibility(role) {
+  currentRole = role;
+  document.querySelectorAll('.admin-only').forEach(el => {
+    el.style.display = role === 'admin' ? '' : 'none';
+  });
+}
 
 $('#logout-btn').addEventListener('click', async () => {
   await fetch('/api/logout', { method: 'POST' });
@@ -717,11 +726,11 @@ function renderClientList() {
             </div>
           </div>
           <div class="row" style="flex-wrap:nowrap">
-            <button class="primary small" data-act="set-token" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${c.has_token ? '更換 Token' : '設定 Token'}</button>
-            ${c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="upgrade" data-id="${c.id}" title="把 60 天 token 升級為永不過期">⭐ 升永久</button>` : ''}
-            ${c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
+            ${currentRole === 'admin' ? `<button class="primary small" data-act="set-token" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${c.has_token ? '更換 Token' : '設定 Token'}</button>` : ''}
+            ${currentRole === 'admin' && c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="upgrade" data-id="${c.id}" title="把 60 天 token 升級為永不過期">⭐ 升永久</button>` : ''}
+            ${currentRole === 'admin' && c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
             ${c.has_token ? `<button class="ghost small" data-act="insights" data-id="${c.id}" data-name="${escapeHtml(c.name)}">📊 洞察</button>` : ''}
-            <button class="ghost small" data-act="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">刪除</button>
+            ${currentRole === 'admin' ? `<button class="ghost small" data-act="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">刪除</button>` : ''}
           </div>
         </div>
       </div>`;
@@ -845,15 +854,115 @@ async function refreshStatusBar() {
       throw new Error();
     }
     const s = await r.json();
+    if (s.me?.role) applyRoleVisibility(s.me.role);
     const here = state.clients.find(c => c.id === state.clientId);
     const dot = here?.has_token ? 'ok' : 'warn';
+    const meTxt = s.me ? `${s.me.username} · ${s.me.role === 'admin' ? '👑 admin' : '👤 staff'}` : '?';
     const txt = here
-      ? `<span class="dot ${dot}"></span>${here.has_token ? '@' + (here.ig_username || '?') : '未連線'} · 待發 ${s.pendingTotal}`
-      : `<span class="dot err"></span>未選業主`;
+      ? `<span class="dot ${dot}"></span>${here.has_token ? '@' + (here.ig_username || '?') : '未連線'} · 待發 ${s.pendingTotal} <span class="subtle">| ${meTxt}</span>`
+      : `<span class="dot err"></span>未選業主 <span class="subtle">| ${meTxt}</span>`;
     $('#status-bar').innerHTML = txt;
   } catch (e) {
     $('#status-bar').innerHTML = '<span class="dot err"></span>後端未連上';
   }
+}
+
+// ─── 用戶管理 ───
+$('#add-user-btn').addEventListener('click', async () => {
+  const username = $('#new-user-name').value.trim();
+  const password = $('#new-user-pw').value;
+  const role = $('#new-user-role').value;
+  if (!username || !password) return alert('請輸入帳號與密碼');
+  if (password.length < 8) return alert('密碼至少 8 字元');
+  const r = await fetch('/api/users', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password, role }),
+  });
+  const json = await r.json();
+  if (!r.ok) return alert('❌ ' + json.error);
+  alert(`✅ 用戶 ${username} 建好（${role}）`);
+  $('#new-user-name').value = ''; $('#new-user-pw').value = '';
+  loadUsers();
+});
+
+$('#change-my-pw-btn').addEventListener('click', async () => {
+  const newPassword = $('#my-new-pw').value;
+  if (newPassword.length < 8) return alert('密碼至少 8 字元');
+  const r = await fetch('/api/me/password', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ newPassword }),
+  });
+  const json = await r.json();
+  if (!r.ok) return alert('❌ ' + json.error);
+  alert('✅ 密碼已改');
+  $('#my-new-pw').value = '';
+});
+
+async function loadUsers() {
+  const r = await fetch('/api/users');
+  if (!r.ok) {
+    $('#user-list').innerHTML = `<div class="card empty-state"><p class="subtle">無權限</p></div>`;
+    return;
+  }
+  const { users } = await r.json();
+  if (!users.length) {
+    $('#user-list').innerHTML = `<div class="card empty-state"><div class="empty-icon">👤</div><p class="subtle">還沒新增任何用戶</p><p class="subtle small">env 來的 admin 隱形運作（不顯示在這）</p></div>`;
+    return;
+  }
+  $('#user-list').innerHTML = users.map(u => {
+    const last = u.last_login_at ? new Date(u.last_login_at).toLocaleString('zh-TW') : '從未';
+    return `
+      <div class="card client-row">
+        <div class="row" style="justify-content:space-between;flex-wrap:nowrap;gap:14px">
+          <div class="client-info" style="flex:1;min-width:0">
+            <div class="client-avatar">${u.role === 'admin' ? '👑' : '👤'}</div>
+            <div style="min-width:0">
+              <h3 style="margin:0">${escapeHtml(u.username)} <span class="tag ${u.role === 'admin' ? 'posted' : 'pending'}" style="margin-left:8px">${u.role}</span> ${u.disabled ? '<span class="tag failed">已停用</span>' : ''}</h3>
+              <div class="subtle small">最後登入：${last}${u.created_by ? ` · 建立者 ${u.created_by}` : ''}</div>
+            </div>
+          </div>
+          <div class="row" style="flex-wrap:nowrap">
+            <button class="ghost small" data-uact="reset" data-id="${u.id}" data-name="${escapeHtml(u.username)}">改密碼</button>
+            <button class="ghost small" data-uact="role" data-id="${u.id}" data-name="${escapeHtml(u.username)}" data-role="${u.role}">改角色</button>
+            <button class="ghost small" data-uact="toggle" data-id="${u.id}" data-disabled="${u.disabled}">${u.disabled ? '啟用' : '停用'}</button>
+            <button class="ghost small" data-uact="del" data-id="${u.id}" data-name="${escapeHtml(u.username)}">刪除</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  $('#user-list').querySelectorAll('button[data-uact]').forEach(b => {
+    b.addEventListener('click', () => handleUserAction(b.dataset));
+  });
+}
+
+async function handleUserAction({ uact, id, name, role, disabled }) {
+  let body = {};
+  if (uact === 'reset') {
+    const pw = prompt(`改 ${name} 的密碼（≥8 字元）：`);
+    if (!pw || pw.length < 8) return;
+    body.password = pw;
+  } else if (uact === 'role') {
+    const newRole = role === 'admin' ? 'staff' : 'admin';
+    if (!confirm(`把 ${name} 改成 ${newRole}？`)) return;
+    body.role = newRole;
+  } else if (uact === 'toggle') {
+    body.disabled = disabled === '1' || disabled === 'true' ? false : true;
+  } else if (uact === 'del') {
+    if (!confirm(`真的刪除用戶 ${name}？`)) return;
+    await fetch(`/api/users/${id}`, { method: 'DELETE' });
+    loadUsers();
+    return;
+  }
+  const r = await fetch(`/api/users/${id}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) loadUsers();
+  else alert('❌ ' + (await r.json()).error);
 }
 
 (async function init() {
