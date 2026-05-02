@@ -273,6 +273,25 @@
     </div>
   </div>
 
+  <!-- Voice modal -->
+  <div id="voice-modal" class="modal" style="display:none">
+    <div class="modal-card big">
+      <h3 id="voice-title">🧬 口吻設定</h3>
+      <div class="subtle small" style="margin-bottom:12px" id="voice-sub"></div>
+      <div id="voice-body">
+        <textarea id="voice-text" rows="14" placeholder="點下方「抓 IG 學一次」自動學，或手動貼自己想要的口吻說明" style="font-family:'SF Mono',Menlo,monospace;font-size:13px"></textarea>
+      </div>
+      <div class="msg" id="voice-msg"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="voice-learn-btn">🤖 抓 IG 學一次（30-60 秒）</button>
+        <button class="ghost" id="voice-save-btn">💾 儲存編輯</button>
+        <button class="ghost" id="voice-clear-btn">🗑️ 清空</button>
+        <span style="flex:1"></span>
+        <button class="ghost" id="voice-close-btn">關閉</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Post detail modal -->
   <div id="post-modal" class="modal" style="display:none">
     <div class="modal-card big">

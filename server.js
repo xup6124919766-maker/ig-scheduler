@@ -21,7 +21,7 @@ import { initTunnel, getPublicUrl, waitForTunnel } from './lib/tunnel.js';
 import { IGClient } from './lib/ig.js';
 import { logInfo, logWarn, logError } from './lib/log.js';
 import { errMsg as translateErr } from './lib/errors.js';
-import { generateCaption } from './lib/ai.js';
+import { generateCaption, learnVoiceFromPosts } from './lib/ai.js';
 import { notify } from './lib/notify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -455,21 +455,76 @@ app.post('/api/posts', (req, res) => {
 
 // ─── AI 文案 ───
 app.post('/api/ai/caption', async (req, res) => {
-  const { mediaPath, brandHint, extraInstructions } = req.body || {};
+  const { mediaPath, brandHint, extraInstructions, clientId } = req.body || {};
   if (!mediaPath || !mediaPath.startsWith('/media/')) {
     return res.status(400).json({ error: '缺 mediaPath' });
   }
   const filename = mediaPath.replace('/media/', '');
   const filePath = path.join(uploadsDir, filename);
+
+  // 抓該 client 學過的口吻 DNA
+  let brandVoice = null;
+  if (clientId) {
+    const c = getClient(parseInt(clientId, 10));
+    if (c?.brand_voice) brandVoice = c.brand_voice;
+  }
+
   try {
-    const r = await generateCaption({ filePath, brandHint, extraInstructions });
-    logInfo({ source: 'ai', action: 'caption_generate', actor: req.user,
-      message: `AI 產文案 ${r.caption.length} 字 + ${r.hashtags.length} hashtags` });
-    res.json(r);
+    const r = await generateCaption({ filePath, brandHint, brandVoice, extraInstructions });
+    logInfo({ source: 'ai', action: 'caption_generate', actor: req.user, clientId,
+      message: `AI 產文案 ${r.caption.length} 字 + ${r.hashtags.length} hashtags${brandVoice ? ' (套口吻)' : ''}` });
+    res.json({ ...r, usedVoice: !!brandVoice });
   } catch (e) {
     logError({ source: 'ai', action: 'caption_fail', actor: req.user, message: e.message });
     res.status(500).json({ error: e.message });
   }
+});
+
+// ─── 學業主口吻 ───
+app.post('/api/clients/:id/learn-voice', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const ig = await ensureClientAccount(id);
+    const c = getClient(id);
+    const data = await ig.getMedia({ limit: 50 });
+    const captions = (data?.data || []).map(m => m.caption).filter(Boolean);
+    if (captions.length < 5) {
+      return res.status(400).json({ error: `IG 上有文案的貼文只 ${captions.length} 篇，需至少 5 篇` });
+    }
+    const result = await learnVoiceFromPosts({ captions, igUsername: c.ig_username });
+    updateClient(id, {
+      brand_voice: result.voice,
+      brand_voice_updated_at: Date.now(),
+    });
+    logInfo({ source: 'ai', action: 'learn_voice', clientId: id, actor: req.user,
+      message: `學完 ${result.sampleCount} 篇貼文的口吻 (${result.voice.length} 字指南)` });
+    res.json({ ok: true, voice: result.voice, sampleCount: result.sampleCount });
+  } catch (e) {
+    logError({ source: 'ai', action: 'learn_voice_fail', clientId: id, actor: req.user, message: e.message });
+    res.status(400).json({ error: errMsg(e) });
+  }
+});
+
+// 取目前的口吻指南
+app.get('/api/clients/:id/voice', (req, res) => {
+  const c = getClient(parseInt(req.params.id, 10));
+  if (!c) return res.status(404).json({ error: '找不到業主' });
+  res.json({
+    voice: c.brand_voice || '',
+    updatedAt: c.brand_voice_updated_at,
+  });
+});
+
+// 手動編輯口吻（admin only）
+app.put('/api/clients/:id/voice', requireRole('admin'), (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { voice } = req.body || {};
+  updateClient(id, {
+    brand_voice: (voice || '').trim() || null,
+    brand_voice_updated_at: Date.now(),
+  });
+  logInfo({ source: 'ai', action: 'edit_voice', clientId: id, actor: req.user });
+  res.json({ ok: true });
 });
 
 app.delete('/api/posts/:id', (req, res) => {

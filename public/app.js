@@ -248,7 +248,7 @@ async function callAICaption(extraInstructions) {
     const r = await fetch('/api/ai/caption', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mediaPath: file.url, extraInstructions }),
+      body: JSON.stringify({ mediaPath: file.url, extraInstructions, clientId: state.clientId }),
     });
     const json = await r.json();
     if (!r.ok) throw new Error(json.error);
@@ -744,6 +744,7 @@ function renderClientList() {
             ${currentRole === 'admin' ? `<button class="primary small" data-act="set-token" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${c.has_token ? '更換 Token' : '設定 Token'}</button>` : ''}
             ${currentRole === 'admin' && c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="upgrade" data-id="${c.id}" title="把 60 天 token 升級為永不過期">⭐ 升永久</button>` : ''}
             ${currentRole === 'admin' && c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
+            ${c.has_token ? `<button class="ghost small" data-act="voice" data-id="${c.id}" data-name="${escapeHtml(c.name)}" title="${c.has_voice ? '已學習口吻 — 點開看/重學' : '抓近 30 篇貼文教 AI 學你的口吻'}">${c.has_voice ? '🧬 已學' : '🧬 學口吻'}</button>` : ''}
             ${c.has_token ? `<button class="ghost small" data-act="insights" data-id="${c.id}" data-name="${escapeHtml(c.name)}">📊 洞察</button>` : ''}
             ${currentRole === 'admin' ? `<button class="ghost small" data-act="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">刪除</button>` : ''}
           </div>
@@ -771,7 +772,8 @@ async function handleClientAction({ act, id, name }) {
     if (r.ok) alert(json.alreadyPermanent ? '✓ 早就是永久了' : '✅ 升級成功！這個 token 從現在起永不過期 🎉');
     else alert('❌ ' + json.error);
     loadClients();
-  } else if (act === 'insights') openInsightsModal(id, name);
+  } else if (act === 'voice') openVoiceModal(id, name);
+  else if (act === 'insights') openInsightsModal(id, name);
   else if (act === 'delete') {
     if (!confirm(`確定刪除業主「${name}」？所有排程貼文也會一併刪除`)) return;
     await fetch(`/api/clients/${id}`, { method: 'DELETE' });
@@ -855,6 +857,78 @@ async function openInsightsModal(id, name) {
   `;
 }
 $('#insights-close').addEventListener('click', () => $('#insights-modal').style.display = 'none');
+
+// ─── Voice modal ───
+let voiceModalClientId = null;
+async function openVoiceModal(id, name) {
+  voiceModalClientId = id;
+  $('#voice-title').textContent = `🧬 ${name} — 口吻設定`;
+  $('#voice-sub').textContent = '載入中…';
+  $('#voice-text').value = '';
+  $('#voice-msg').textContent = '';
+  $('#voice-modal').style.display = 'flex';
+  try {
+    const r = await fetch(`/api/clients/${id}/voice`);
+    const d = await r.json();
+    $('#voice-text').value = d.voice || '';
+    $('#voice-sub').textContent = d.updatedAt
+      ? `上次更新：${new Date(d.updatedAt).toLocaleString('zh-TW')} · ${(d.voice || '').length} 字`
+      : '尚未學習口吻 — 按下方按鈕讓 AI 看你的 IG 貼文學習';
+  } catch (e) {
+    $('#voice-sub').textContent = '載入失敗';
+  }
+}
+$('#voice-close-btn').addEventListener('click', () => $('#voice-modal').style.display = 'none');
+
+$('#voice-learn-btn').addEventListener('click', async () => {
+  if (!confirm('開始讓 AI 看這個業主的 IG 近 30 篇貼文，學他的口吻？\n（30-60 秒）')) return;
+  const msg = $('#voice-msg');
+  const btn = $('#voice-learn-btn');
+  btn.disabled = true; btn.textContent = '🤖 學習中…30-60 秒';
+  msg.textContent = '正在抓 IG 貼文 + Gemini 分析…'; msg.className = 'msg muted';
+  try {
+    const r = await fetch(`/api/clients/${voiceModalClientId}/learn-voice`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    $('#voice-text').value = d.voice;
+    msg.textContent = `✅ 學習完成！分析了 ${d.sampleCount} 篇貼文，產出 ${d.voice.length} 字的口吻指南`;
+    msg.className = 'msg ok';
+    loadClients();
+  } catch (e) {
+    msg.textContent = '❌ ' + e.message;
+    msg.className = 'msg err';
+  } finally {
+    btn.disabled = false; btn.textContent = '🤖 抓 IG 學一次（30-60 秒）';
+  }
+});
+
+$('#voice-save-btn').addEventListener('click', async () => {
+  const voice = $('#voice-text').value.trim();
+  const msg = $('#voice-msg');
+  const r = await fetch(`/api/clients/${voiceModalClientId}/voice`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ voice }),
+  });
+  if (r.ok) {
+    msg.textContent = '✅ 已儲存'; msg.className = 'msg ok';
+    loadClients();
+  } else {
+    msg.textContent = '❌ ' + (await r.json()).error; msg.className = 'msg err';
+  }
+});
+
+$('#voice-clear-btn').addEventListener('click', async () => {
+  if (!confirm('真的清空這個業主的口吻設定？AI 將回到通用模式')) return;
+  $('#voice-text').value = '';
+  await fetch(`/api/clients/${voiceModalClientId}/voice`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ voice: '' }),
+  });
+  $('#voice-msg').textContent = '已清空';
+  loadClients();
+});
 
 // close modals on backdrop click
 document.querySelectorAll('.modal').forEach(m => {
