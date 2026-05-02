@@ -12,6 +12,7 @@
     "node": ">=22.5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.92.0",
     "axios": "^1.7.9",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.7",
