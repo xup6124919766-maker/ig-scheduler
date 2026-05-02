@@ -70,9 +70,12 @@
         </div>
         <div id="preview" class="preview"></div>
 
-        <label style="display:flex;justify-content:space-between;align-items:center">
+        <label style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
           <span>文案</span>
-          <button class="ghost small" id="ai-caption-btn" type="button" title="用 AI 看圖生文案">✨ AI 寫文案</button>
+          <span style="display:flex;gap:8px;align-items:center">
+            <label class="check small" title="影片/圖片上傳完自動讀內容生爆款文案"><input type="checkbox" id="auto-ai" checked /> 上傳後自動 AI</label>
+            <button class="ghost small" id="ai-caption-btn" type="button" title="用 AI 看影片/圖生爆款文案">✨ AI 寫文案</button>
+          </span>
         </label>
         <textarea id="caption" rows="6" placeholder="寫文案…可包含 @標註"></textarea>
         <div class="subtle small"><span id="cap-count">0</span> / 2200</div>

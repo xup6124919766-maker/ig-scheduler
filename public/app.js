@@ -108,6 +108,16 @@ async function handleFiles(fileList) {
     if (state.type === 'story') state.files = state.files.slice(-1);
     if (state.type === 'carousel') state.files = state.files.slice(0, 10);
     renderPreview();
+
+    // 🤖 自動觸發 AI 文案（如果勾選 + caption 還空 + 是 reel/image/carousel，story 跳過因為沒文案）
+    if (state.files.length && state.type !== 'story' && $('#auto-ai')?.checked && !cap.value.trim()) {
+      callAICaption().then(r => {
+        if (r?.caption) { cap.value = r.caption; capCount.textContent = r.caption.length; }
+        if (r?.hashtags?.length && !$('#hashtags').value.trim()) {
+          $('#hashtags').value = r.hashtags.join(' ');
+        }
+      }).catch(e => console.warn('Auto AI 失敗:', e.message));
+    }
   } catch (e) {
     alert('上傳失敗：' + e.message);
   }
@@ -226,8 +236,14 @@ $('#submit-btn').addEventListener('click', async () => {
 async function callAICaption(extraInstructions) {
   if (!state.files.length) { alert('請先上傳一張素材，AI 才看得到圖'); return; }
   const file = state.files[0];
-  const btns = [$('#ai-caption-btn'), $('#ai-tags-btn')];
-  btns.forEach(b => { b.disabled = true; b.textContent = '⏳ AI 思考中…'; });
+  const isVideo = file.mimeType?.startsWith('video');
+  const btns = [$('#ai-caption-btn'), $('#ai-tags-btn')].filter(Boolean);
+  btns.forEach(b => { b.disabled = true; });
+  if ($('#ai-caption-btn')) $('#ai-caption-btn').textContent = isVideo ? '⏳ AI 看影片中…(30-90 秒)' : '⏳ AI 看圖中…';
+  if ($('#ai-tags-btn')) $('#ai-tags-btn').textContent = '⏳ 思考中…';
+  // caption 區顯示提示
+  const orig = cap.placeholder;
+  cap.placeholder = isVideo ? '🤖 AI 正在看影片… 影片越大越久（最多 2 分鐘）' : '🤖 AI 正在看圖…';
   try {
     const r = await fetch('/api/ai/caption', {
       method: 'POST',
@@ -238,10 +254,9 @@ async function callAICaption(extraInstructions) {
     if (!r.ok) throw new Error(json.error);
     return json;
   } finally {
-    $('#ai-caption-btn').disabled = false;
-    $('#ai-caption-btn').textContent = '✨ AI 寫文案';
-    $('#ai-tags-btn').disabled = false;
-    $('#ai-tags-btn').textContent = '✨ 推薦標籤';
+    if ($('#ai-caption-btn')) { $('#ai-caption-btn').disabled = false; $('#ai-caption-btn').textContent = '✨ AI 寫文案'; }
+    if ($('#ai-tags-btn')) { $('#ai-tags-btn').disabled = false; $('#ai-tags-btn').textContent = '✨ 推薦標籤'; }
+    cap.placeholder = orig;
   }
 }
 
