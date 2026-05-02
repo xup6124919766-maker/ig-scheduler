@@ -194,9 +194,17 @@ app.post('/api/clients/:id/token', async (req, res) => {
     const ig = new IGClient({ token, version: GRAPH_VERSION });
     const acc = await ig.resolveAccount();
     ig.igUserId = acc.igUserId;
+
+    // 🎯 如果拿到 page token，改用 page token（永不過期）
+    let tokenToStore = token;
+    if (acc.pageToken) {
+      tokenToStore = acc.pageToken;
+      ig.token = acc.pageToken;
+    }
     const profile = await ig.getProfile();
+
     updateClient(id, {
-      access_token_enc: encrypt(token),
+      access_token_enc: encrypt(tokenToStore),
       ig_user_id: acc.igUserId,
       ig_username: profile.username || acc.igUsername,
       page_id: acc.pageId,
@@ -204,11 +212,43 @@ app.post('/api/clients/:id/token', async (req, res) => {
       token_type: ig.tokenType,
       token_refreshed_at: Date.now(),
     });
-    logInfo({ source: 'client', action: 'set_token', clientId: id, actor: req.user, message: `綁定 IG @${profile.username} (type=${ig.tokenType})` });
-    res.json({ ok: true, profile, tokenType: ig.tokenType });
+    const upgraded = acc.pageToken ? '（已升級為永不過期 Page Token ✨）' : '';
+    logInfo({ source: 'client', action: 'set_token', clientId: id, actor: req.user,
+      message: `綁定 IG @${profile.username} (type=${ig.tokenType}) ${upgraded}` });
+    res.json({ ok: true, profile, tokenType: ig.tokenType, permanent: !!acc.pageToken });
   } catch (e) {
     const msg = errMsg(e);
     logError({ source: 'client', action: 'set_token_fail', clientId: id, actor: req.user, message: msg });
+    res.status(400).json({ error: msg });
+  }
+});
+
+// 把現有 user token 升級為永不過期的 page token
+app.post('/api/clients/:id/upgrade-token', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const c = getClient(id);
+  if (!c) return res.status(404).json({ error: '找不到業主' });
+  if (c.token_type === 'fb_page') {
+    return res.json({ ok: true, alreadyPermanent: true, message: '已經是永久 token' });
+  }
+  const ig = buildClient(c);
+  if (!ig) return res.status(400).json({ error: '尚未設定 token' });
+  try {
+    const acc = await ig.resolveAccount();
+    if (!acc.pageToken) {
+      return res.status(400).json({ error: 'Token 沒拿到 page token，可能是 IG Login token 或 user token 不是長效版本' });
+    }
+    updateClient(id, {
+      access_token_enc: encrypt(acc.pageToken),
+      token_type: 'fb_page',
+      token_refreshed_at: Date.now(),
+    });
+    logInfo({ source: 'client', action: 'upgrade_token', clientId: id, actor: req.user,
+      message: `${c.name} 升級為永久 Page Token ✨` });
+    res.json({ ok: true, permanent: true });
+  } catch (e) {
+    const msg = errMsg(e);
+    logError({ source: 'client', action: 'upgrade_token_fail', clientId: id, actor: req.user, message: msg });
     res.status(400).json({ error: msg });
   }
 });
@@ -506,6 +546,8 @@ const tickScheduler = async () => {
 
 const autoRefreshAllTokens = async () => {
   for (const c of listClients()) {
+    // 🎯 fb_page token 永不過期，跳過
+    if (c.token_type === 'fb_page') continue;
     const refreshedAt = c.token_refreshed_at || 0;
     const ageDays = (Date.now() - refreshedAt) / 86400000;
     if (refreshedAt && ageDays < 30) continue;

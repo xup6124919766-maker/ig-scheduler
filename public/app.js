@@ -718,7 +718,8 @@ function renderClientList() {
           </div>
           <div class="row" style="flex-wrap:nowrap">
             <button class="primary small" data-act="set-token" data-id="${c.id}" data-name="${escapeHtml(c.name)}">${c.has_token ? '更換 Token' : '設定 Token'}</button>
-            ${c.has_token ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
+            ${c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="upgrade" data-id="${c.id}" title="把 60 天 token 升級為永不過期">⭐ 升永久</button>` : ''}
+            ${c.has_token && c.token_type !== 'fb_page' ? `<button class="ghost small" data-act="refresh" data-id="${c.id}">續期</button>` : ''}
             ${c.has_token ? `<button class="ghost small" data-act="insights" data-id="${c.id}" data-name="${escapeHtml(c.name)}">📊 洞察</button>` : ''}
             <button class="ghost small" data-act="delete" data-id="${c.id}" data-name="${escapeHtml(c.name)}">刪除</button>
           </div>
@@ -737,6 +738,13 @@ async function handleClientAction({ act, id, name }) {
     const r = await fetch(`/api/clients/${id}/refresh-token`, { method: 'POST' });
     const json = await r.json();
     if (r.ok) alert(`✅ 已續期 ${Math.round(json.expiresIn / 86400)} 天`);
+    else alert('❌ ' + json.error);
+    loadClients();
+  } else if (act === 'upgrade') {
+    if (!confirm('把這個業主的 token 升級為「永不過期」版本？\n（前提：你目前的 token 是 60 天長效版）')) return;
+    const r = await fetch(`/api/clients/${id}/upgrade-token`, { method: 'POST' });
+    const json = await r.json();
+    if (r.ok) alert(json.alreadyPermanent ? '✓ 早就是永久了' : '✅ 升級成功！這個 token 從現在起永不過期 🎉');
     else alert('❌ ' + json.error);
     loadClients();
   } else if (act === 'insights') openInsightsModal(id, name);
