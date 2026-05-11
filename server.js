@@ -23,6 +23,7 @@ import { logInfo, logWarn, logError } from './lib/log.js';
 import { errMsg as translateErr } from './lib/errors.js';
 import { generateCaption, learnVoiceFromPosts } from './lib/ai.js';
 import { notify } from './lib/notify.js';
+import { checkForbiddenWords, DAILY_POST_LIMIT, jitterScheduledAt, taipeiDayBounds } from './lib/contentGuard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '4567', 10);
@@ -442,14 +443,37 @@ app.post('/api/posts', (req, res) => {
     return res.status(400).json({ error: 'Story 只能有 1 個素材' });
   }
   if (!getClient(clientId)) return res.status(400).json({ error: '業主不存在' });
+
+  // 違禁詞檢查（caption + firstComment 一起查）
+  const hits = checkForbiddenWords(`${caption || ''} ${firstComment || ''}`);
+  if (hits.length) {
+    return res.status(400).json({ error: `文案/留言含違禁詞：${hits.join('、')}（廣告法地雷）。請改寫後再排程。` });
+  }
+
+  // 每日上限（台北日，計入 pending/publishing/posted）
+  const requestedTs = new Date(scheduledAt).getTime();
+  const { startMs, endMs, label: dayLabel } = taipeiDayBounds(requestedTs);
+  const sameDay = listPosts({ clientId })
+    .filter(p => p.scheduled_at >= startMs && p.scheduled_at < endMs)
+    .filter(p => ['pending', 'publishing', 'posted'].includes(p.status));
+  if (sameDay.length >= DAILY_POST_LIMIT) {
+    return res.status(400).json({
+      error: `該業主 ${dayLabel} 已排 ${sameDay.length} 篇（每日上限 ${DAILY_POST_LIMIT}）。換日期或調 Railway 環境變數 DAILY_POST_LIMIT。`,
+    });
+  }
+
+  // 加 ±5 分隨機 jitter，避免發文整點齊到像機器人
+  const finalTs = jitterScheduledAt(requestedTs, 5);
+  const jitterMin = ((finalTs - requestedTs) / 60000).toFixed(1);
+
   const id = insertPost({
     clientId, type, caption: caption || '', mediaPaths,
-    scheduledAt: new Date(scheduledAt).getTime(),
+    scheduledAt: finalTs,
     shareToFeed: shareToFeed === false ? 0 : 1,
     firstComment: type === 'story' ? null : (firstComment || null),
   });
   logInfo({ source: 'post', action: 'create', clientId, postId: id, actor: req.user,
-    message: `排程 ${type} 於 ${new Date(scheduledAt).toLocaleString('zh-TW')}` });
+    message: `排程 ${type} 於 ${new Date(finalTs).toLocaleString('zh-TW')}（jitter ${jitterMin >= 0 ? '+' : ''}${jitterMin} 分）` });
   res.json({ id, post: getPost(id) });
 });
 
