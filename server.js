@@ -10,6 +10,7 @@ import {
   db,
   insertClient, listClients, getClient, updateClient, deleteClient,
   insertPost, listPosts, getPost, getDuePosts, updatePostStatus, deletePost,
+  countPostsInRange, getPendingCountsByClient, getClientsHasToken,
   purgeExpiredSessions,
   listLogs, purgeOldLogs, claimPost, incrementRetry,
   getOldPostedMediaPaths, getActiveMediaFilenames,
@@ -49,16 +50,36 @@ const storage = multer.diskStorage({
     cb(null, `${hash}${ext}`);
   },
 });
-const upload = multer({ storage, limits: { fileSize: 200 * 1024 * 1024 } });
+// 只接 IG 支援的圖片／影片 MIME — 擋住 .exe / .php / 任意附件夾帶
+const ALLOWED_MIME = new Set([
+  'image/jpeg', 'image/png', 'image/webp',
+  'video/mp4', 'video/quicktime', 'video/x-m4v',
+]);
+const upload = multer({
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_MIME.has(file.mimetype)) return cb(null, true);
+    cb(new Error(`不支援的檔案類型：${file.mimetype}（只接 jpg/png/webp/mp4/mov）`));
+  },
+});
 
 // ─── 公開：health / login 頁面 / media（IG 抓素材要用）/ login.css ───
+const bootTime = Date.now();
 app.get('/healthz', (_req, res) => {
-  try {
-    db.prepare('SELECT 1').get();
-    res.json({ ok: true, time: Date.now() });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+  const checks = { db: 'ok', cron: 'ok' };
+  let ok = true;
+  try { db.prepare('SELECT 1').get(); }
+  catch (e) { checks.db = `fail: ${e.message}`; ok = false; }
+  // cron 健康 = 沒進入 shutting down 狀態
+  if (shuttingDown) { checks.cron = 'shutting_down'; ok = false; }
+  res.status(ok ? 200 : 503).json({
+    ok,
+    uptime_sec: Math.floor((Date.now() - bootTime) / 1000),
+    active_publish: activePublishCount,
+    checks,
+    time: Date.now(),
+  });
 });
 
 app.use('/media', express.static(uploadsDir, {
@@ -248,10 +269,12 @@ app.post('/api/me/password', (req, res) => {
 
 // ─── 業主管理 ───
 app.get('/api/clients', (_req, res) => {
+  const tokenMap = getClientsHasToken();
+  const pendingMap = getPendingCountsByClient();
   const rows = listClients().map(c => ({
     ...c,
-    has_token: !!getClient(c.id).access_token_enc,
-    pending_count: listPosts({ clientId: c.id, status: 'pending' }).length,
+    has_token: !!tokenMap[c.id],
+    pending_count: pendingMap[c.id] || 0,
   }));
   res.json({ clients: rows });
 });
@@ -410,19 +433,25 @@ app.get('/api/clients/:id/limit', async (req, res) => {
 });
 
 // ─── 上傳 ───
-app.post('/api/upload', upload.array('files', 10), (req, res) => {
-  const files = (req.files || []).map(f => ({
-    filename: f.filename,
-    originalName: f.originalname,
-    size: f.size,
-    mimeType: f.mimetype,
-    url: `/media/${f.filename}`,
-  }));
-  if (files.length) {
-    logInfo({ source: 'upload', actor: req.user,
-      message: `上傳 ${files.length} 個檔案，共 ${Math.round(files.reduce((s, f) => s + f.size, 0) / 1024)} KB` });
-  }
-  res.json({ files });
+app.post('/api/upload', (req, res) => {
+  upload.array('files', 10)(req, res, (err) => {
+    if (err) {
+      logWarn({ source: 'upload', actor: req.user, message: `上傳被拒：${err.message}` });
+      return res.status(400).json({ error: err.message });
+    }
+    const files = (req.files || []).map(f => ({
+      filename: f.filename,
+      originalName: f.originalname,
+      size: f.size,
+      mimeType: f.mimetype,
+      url: `/media/${f.filename}`,
+    }));
+    if (files.length) {
+      logInfo({ source: 'upload', actor: req.user,
+        message: `上傳 ${files.length} 個檔案，共 ${Math.round(files.reduce((s, f) => s + f.size, 0) / 1024)} KB` });
+    }
+    res.json({ files });
+  });
 });
 
 // ─── 貼文排程 ───
@@ -444,21 +473,27 @@ app.post('/api/posts', (req, res) => {
   }
   if (!getClient(clientId)) return res.status(400).json({ error: '業主不存在' });
 
+  // 文案／留言長度上限（IG caption 2200，comment 同上限）
+  if ((caption || '').length > 2200) {
+    return res.status(400).json({ error: `文案超過 2200 字（目前 ${caption.length} 字）` });
+  }
+  if ((firstComment || '').length > 2200) {
+    return res.status(400).json({ error: `首則留言超過 2200 字（目前 ${firstComment.length} 字）` });
+  }
+
   // 違禁詞檢查（caption + firstComment 一起查）
   const hits = checkForbiddenWords(`${caption || ''} ${firstComment || ''}`);
   if (hits.length) {
     return res.status(400).json({ error: `文案/留言含違禁詞：${hits.join('、')}（廣告法地雷）。請改寫後再排程。` });
   }
 
-  // 每日上限（台北日，計入 pending/publishing/posted）
+  // 每日上限（台北日，計入 pending/publishing/posted）— 直接走 SQL 範圍查詢
   const requestedTs = new Date(scheduledAt).getTime();
   const { startMs, endMs, label: dayLabel } = taipeiDayBounds(requestedTs);
-  const sameDay = listPosts({ clientId })
-    .filter(p => p.scheduled_at >= startMs && p.scheduled_at < endMs)
-    .filter(p => ['pending', 'publishing', 'posted'].includes(p.status));
-  if (sameDay.length >= DAILY_POST_LIMIT) {
+  const sameDayCount = countPostsInRange(clientId, startMs, endMs);
+  if (sameDayCount >= DAILY_POST_LIMIT) {
     return res.status(400).json({
-      error: `該業主 ${dayLabel} 已排 ${sameDay.length} 篇（每日上限 ${DAILY_POST_LIMIT}）。換日期或調 Railway 環境變數 DAILY_POST_LIMIT。`,
+      error: `該業主 ${dayLabel} 已排 ${sameDayCount} 篇（每日上限 ${DAILY_POST_LIMIT}）。換日期或調 Railway 環境變數 DAILY_POST_LIMIT。`,
     });
   }
 
@@ -712,9 +747,25 @@ const publishPost = async (post) => {
   }
 };
 
+// scheduler 全域狀態 — graceful shutdown 要等 publishing 完成
+let activePublishCount = 0;
+let shuttingDown = false;
+
 const tickScheduler = async () => {
-  const due = getDuePosts();
-  for (const p of due) await publishPost(p);
+  if (shuttingDown) return;
+  try {
+    const due = getDuePosts();
+    for (const p of due) {
+      if (shuttingDown) break;
+      activePublishCount++;
+      try { await publishPost(p); }
+      finally { activePublishCount--; }
+    }
+  } catch (e) {
+    // cron tick 本身爆掉（DB 鎖 / 系統錯）就告警，避免靜默卡死
+    logError({ source: 'scheduler', action: 'tick_fail', message: e.message });
+    notify({ title: '🚨 排程器 tick 異常', message: e.message, level: 'error' }).catch(() => {});
+  }
 };
 
 const autoRefreshAllTokens = async () => {
@@ -763,6 +814,26 @@ const cleanupOldUploads = () => {
     logError({ source: 'scheduler', action: 'cleanup_fail', message: e.message });
   }
 };
+
+// Graceful shutdown — Railway 重啟前等正在發佈的貼文完成，避免狀態卡在 publishing
+const gracefulShutdown = async (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n📤 收到 ${signal}，等待 ${activePublishCount} 篇發佈中貼文完成...`);
+  logInfo({ source: 'system', action: 'shutdown', message: `${signal} 開始 graceful shutdown` });
+  const deadline = Date.now() + 25000; // Railway SIGTERM → SIGKILL 約 30 秒
+  while (activePublishCount > 0 && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (activePublishCount > 0) {
+    logWarn({ source: 'system', action: 'shutdown_timeout',
+      message: `逾時退出，仍有 ${activePublishCount} 篇 publishing` });
+  }
+  try { db.close(); } catch {}
+  process.exit(0);
+};
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 app.listen(PORT, async () => {
   console.log(`\n🚀 ＩＧ排程器 啟動 :${PORT}`);
