@@ -12,7 +12,7 @@ import {
   insertPost, listPosts, getPost, getDuePosts, updatePostStatus, deletePost,
   countPostsInRange, getPendingCountsByClient, getClientsHasToken,
   purgeExpiredSessions,
-  listLogs, purgeOldLogs, claimPost, incrementRetry,
+  listLogs, purgeOldLogs, claimPost, incrementRetry, requeuePost,
   getOldPostedMediaPaths, getActiveMediaFilenames,
   listUsers, insertUser, updateUser, deleteUser, findUserByUsername,
 } from './lib/db.js';
@@ -21,7 +21,7 @@ import { checkLogin, createSession, destroySession, requireAuth, requireRole, se
 import { initTunnel, getPublicUrl, waitForTunnel } from './lib/tunnel.js';
 import { IGClient } from './lib/ig.js';
 import { logInfo, logWarn, logError } from './lib/log.js';
-import { errMsg as translateErr } from './lib/errors.js';
+import { errMsg as translateErr, isTransientPublishError } from './lib/errors.js';
 import { generateCaption, learnVoiceFromPosts } from './lib/ai.js';
 import { notify } from './lib/notify.js';
 import { checkForbiddenWords, DAILY_POST_LIMIT, jitterScheduledAt, taipeiDayBounds } from './lib/contentGuard.js';
@@ -29,6 +29,10 @@ import { checkForbiddenWords, DAILY_POST_LIMIT, jitterScheduledAt, taipeiDayBoun
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || '4567', 10);
 const GRAPH_VERSION = process.env.GRAPH_VERSION || 'v21.0';
+
+// 排程發布的自動重試策略：暫時性錯誤退避重排，避免一次抖動就永久 failed
+const SCHED_MAX_AUTO_RETRY = 4; // 含首次，最多嘗試 4 次後才真正放棄
+const SCHED_RETRY_BACKOFF_MS = [3 * 60000, 10 * 60000, 30 * 60000]; // 3 / 10 / 30 分
 
 const isRailway = !!process.env.RAILWAY_PUBLIC_DOMAIN;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL
@@ -616,7 +620,8 @@ app.post('/api/posts/:id/retry', (req, res) => {
   const p = getPost(id);
   if (!p) return res.status(404).json({ error: '找不到貼文' });
   if (p.status !== 'failed') return res.status(400).json({ error: `狀態為 ${p.status}，無法重試` });
-  db.prepare("UPDATE posts SET status='pending', error=NULL, scheduled_at=? WHERE id=?")
+  // 歸零 retry_count，讓手動重試重新享有完整的自動退避重試額度
+  db.prepare("UPDATE posts SET status='pending', error=NULL, retry_count=0, scheduled_at=? WHERE id=?")
     .run(Date.now(), id);
   logInfo({ source: 'post', action: 'retry', clientId: p.client_id, postId: id, actor: req.user });
   res.json({ ok: true });
@@ -734,15 +739,29 @@ const publishPost = async (post) => {
     }
   } catch (e) {
     const msg = errMsg(e);
-    incrementRetry(post.id);
+    const attempts = incrementRetry(post.id); // 累計嘗試次數（含本次）
+
+    // 暫時性錯誤（FB 偶發 Authorization Error、rate limit、5xx、媒體抓取逾時…）
+    // → 退避重排，讓排程器自動再試，避免一次抖動就永久陣亡、靜默躺好幾週
+    if (isTransientPublishError(e) && attempts < SCHED_MAX_AUTO_RETRY) {
+      const delayMs = SCHED_RETRY_BACKOFF_MS[attempts - 1] || SCHED_RETRY_BACKOFF_MS.at(-1);
+      const nextAt = Date.now() + delayMs;
+      requeuePost(post.id, nextAt, msg);
+      logWarn({ source: 'scheduler', action: 'publish_retry', clientId: post.client_id, postId: post.id,
+        message: `第 ${attempts} 次暫時性失敗，${Math.round(delayMs / 60000)} 分後自動重試：${msg}`,
+        metadata: { type: post.type, attempts, next_at: nextAt } });
+      return;
+    }
+
+    // 永久失敗，或已用盡自動重試 → 標記 failed 並告警
     updatePostStatus(post.id, { status: 'failed', error: msg });
     logError({ source: 'scheduler', action: 'publish_fail', clientId: post.client_id, postId: post.id,
-      message: msg, metadata: { type: post.type } });
+      message: msg, metadata: { type: post.type, attempts } });
     notify({
       title: `❌ 貼文發送失敗 #${post.id}`,
-      message: msg,
+      message: `${msg}${attempts >= SCHED_MAX_AUTO_RETRY ? `\n（已自動重試 ${attempts} 次仍失敗）` : ''}`,
       level: 'error',
-      metadata: { client_id: post.client_id, type: post.type, post_id: post.id },
+      metadata: { client_id: post.client_id, type: post.type, post_id: post.id, attempts },
     }).catch(() => {});
   }
 };

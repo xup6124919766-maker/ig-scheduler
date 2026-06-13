@@ -6,3 +6,5 @@ db/*.db-journal
 *.log
 deploy.sh
 .DS_Store
+db/*.db-shm
+db/*.db-wal
